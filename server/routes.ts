@@ -1500,6 +1500,21 @@ export async function registerRoutes(
     res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, suspended: user.suspended });
   });
 
+  app.patch("/api/admin/users/:id/role", requireAdmin, (req, res) => {
+    const { role } = req.body;
+    const userId = req.params.id as string;
+    if (!["user", "admin"].includes(role)) {
+      return res.status(400).json({ error: "Invalid role" });
+    }
+    // Prevent removing your own admin role
+    if (userId === req.session.userId && role !== "admin") {
+      return res.status(400).json({ error: "Cannot remove your own admin role" });
+    }
+    const user = storage.updateUserRole(userId, role);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, suspended: user.suspended });
+  });
+
   app.patch("/api/admin/users/:id/suspend", requireAdmin, (req, res) => {
     const { suspended } = req.body;
     const userId = req.params.id as string;

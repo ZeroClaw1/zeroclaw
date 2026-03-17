@@ -138,6 +138,7 @@ export interface IStorage {
   updateUserTier(userId: string, tier: SubscriptionTier): User | undefined;
   suspendUser(userId: string): User | undefined;
   unsuspendUser(userId: string): User | undefined;
+  updateUserRole(userId: string, role: "user" | "admin"): User | undefined;
   getAdminStats(): { totalUsers: number; tierBreakdown: Record<string, number>; suspendedCount: number; recentSignups: number };
 }
 
@@ -1093,6 +1094,13 @@ export class MemStorage implements IStorage {
     if (!user) return undefined;
     user.suspended = false;
     user.suspendedAt = null;
+    return user;
+  }
+
+  updateUserRole(userId: string, role: "user" | "admin"): User | undefined {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    user.role = role;
     return user;
   }
 

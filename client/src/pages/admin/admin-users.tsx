@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { getQueryFn, apiRequest, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/use-auth";
 import { AdminLayout } from "./admin-layout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, Ban, CheckCircle, Shield } from "lucide-react";
+import { Search, Ban, CheckCircle, Shield, ShieldOff } from "lucide-react";
 import type { SubscriptionTier } from "@shared/schema";
 
 interface AdminUser {
@@ -32,6 +33,7 @@ const TIER_BADGE_COLORS: Record<string, string> = {
 
 export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
+  const { user: currentUser } = useAuth();
 
   const { data: users, isLoading } = useQuery<AdminUser[]>({
     queryKey: ["/api/admin/users"],
@@ -52,10 +54,19 @@ export default function AdminUsersPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] }),
   });
 
+  const roleMutation = useMutation({
+    mutationFn: async ({ userId, role }: { userId: string; role: "user" | "admin" }) => {
+      await apiRequest("PATCH", `/api/admin/users/${userId}/role`, { role });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] }),
+  });
+
   const filtered = users?.filter((u) => {
     const q = search.toLowerCase();
     return u.email.toLowerCase().includes(q) || u.username.toLowerCase().includes(q) || u.id.toLowerCase().includes(q);
   }) ?? [];
+
+  const isSelf = (userId: string) => currentUser?.id === userId;
 
   return (
     <AdminLayout title="User Management" subtitle="View and manage platform users">
@@ -108,7 +119,12 @@ export default function AdminUsersPage() {
                       <TableRow key={user.id} data-testid={`admin-user-row-${user.id}`}>
                         <TableCell>
                           <div>
-                            <p className="text-xs font-medium">{user.username}</p>
+                            <p className="text-xs font-medium">
+                              {user.username}
+                              {isSelf(user.id) && (
+                                <span className="text-[10px] text-muted-foreground ml-1.5">(you)</span>
+                              )}
+                            </p>
                             <p className="text-[10px] text-muted-foreground">{user.email}</p>
                           </div>
                         </TableCell>
@@ -126,7 +142,6 @@ export default function AdminUsersPage() {
                           <Select
                             value={user.tier}
                             onValueChange={(tier) => tierMutation.mutate({ userId: user.id, tier })}
-                            disabled={user.role === "admin"}
                           >
                             <SelectTrigger className="h-6 w-28 text-[10px] border-0 bg-transparent p-0" data-testid={`admin-tier-select-${user.id}`}>
                               <SelectValue>
@@ -160,22 +175,48 @@ export default function AdminUsersPage() {
                           </span>
                         </TableCell>
                         <TableCell className="text-right">
-                          {user.role !== "admin" && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className={`h-6 px-2 text-[10px] ${user.suspended ? "text-emerald-400 hover:text-emerald-300" : "text-red-400 hover:text-red-300"}`}
-                              onClick={() => suspendMutation.mutate({ userId: user.id, suspended: !user.suspended })}
-                              disabled={suspendMutation.isPending}
-                              data-testid={`admin-suspend-${user.id}`}
-                            >
-                              {user.suspended ? (
-                                <><CheckCircle className="h-3 w-3 mr-1" />Unsuspend</>
-                              ) : (
-                                <><Ban className="h-3 w-3 mr-1" />Suspend</>
-                              )}
-                            </Button>
-                          )}
+                          <div className="flex items-center justify-end gap-1">
+                            {/* Role toggle — can't demote yourself */}
+                            {!isSelf(user.id) && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className={`h-6 px-2 text-[10px] ${user.role === "admin" ? "text-amber-400 hover:text-amber-300" : "text-blue-400 hover:text-blue-300"}`}
+                                onClick={() =>
+                                  roleMutation.mutate({
+                                    userId: user.id,
+                                    role: user.role === "admin" ? "user" : "admin",
+                                  })
+                                }
+                                disabled={roleMutation.isPending}
+                                data-testid={`admin-role-toggle-${user.id}`}
+                              >
+                                {user.role === "admin" ? (
+                                  <><ShieldOff className="h-3 w-3 mr-1" />Demote</>
+                                ) : (
+                                  <><Shield className="h-3 w-3 mr-1" />Make Admin</>
+                                )}
+                              </Button>
+                            )}
+
+                            {/* Suspend toggle — can't suspend admins or yourself */}
+                            {!isSelf(user.id) && user.role !== "admin" && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className={`h-6 px-2 text-[10px] ${user.suspended ? "text-emerald-400 hover:text-emerald-300" : "text-red-400 hover:text-red-300"}`}
+                                onClick={() => suspendMutation.mutate({ userId: user.id, suspended: !user.suspended })}
+                                disabled={suspendMutation.isPending}
+                                data-testid={`admin-suspend-${user.id}`}
+                              >
+                                {user.suspended ? (
+                                  <><CheckCircle className="h-3 w-3 mr-1" />Unsuspend</>
+                                ) : (
+                                  <><Ban className="h-3 w-3 mr-1" />Suspend</>
+                                )}
+                              </Button>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))
