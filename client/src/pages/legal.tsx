@@ -1,7 +1,6 @@
 import { Link } from "wouter";
 import { ArrowLeft } from "lucide-react";
 import { openclawLogoSm } from "@/lib/logo";
-import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 
 const EFFECTIVE_DATE = "March 16, 2026";
 const COMPANY = "ZeroClaw";
@@ -53,7 +52,6 @@ function LegalLayout({ title, children }: { title: string; children: React.React
             <Link href="/terms" className="hover:text-foreground transition-colors">Terms</Link>
             <Link href="/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
           </div>
-          <PerplexityAttribution />
         </div>
       </footer>
     </div>

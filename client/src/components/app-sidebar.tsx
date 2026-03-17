@@ -30,7 +30,6 @@ import {
   SidebarMenuItem,
   SidebarFooter,
 } from "@/components/ui/sidebar";
-import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import { openclawLogoSm } from "@/lib/logo";
 
 const navItems = [
@@ -170,7 +169,6 @@ export function AppSidebar() {
           <div className="h-2 w-2 rounded-full bg-green-500 glow-success pulse-live" />
           <span>Gateway Connected</span>
         </div>
-        <PerplexityAttribution />
       </SidebarFooter>
     </Sidebar>
   );

@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/accordion";
 import { ArrowLeft } from "lucide-react";
 import { openclawLogoSm } from "@/lib/logo";
-import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 
 const faqs = [
   {
@@ -183,7 +182,6 @@ export default function PricingPage() {
           <p className="text-[11px] text-muted-foreground">
             &copy; 2026 ZeroClaw. All rights reserved.
           </p>
-          <PerplexityAttribution />
         </div>
       </footer>
     </div>

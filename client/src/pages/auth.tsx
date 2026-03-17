@@ -257,9 +257,6 @@ export default function AuthPage() {
           </CardHeader>
         </Card>
 
-        <p className="text-center text-[10px] text-muted-foreground mt-6">
-          Created with Perplexity Computer
-        </p>
       </div>
     </div>
   );

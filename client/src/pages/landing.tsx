@@ -34,7 +34,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { openclawLogoSm } from "@/lib/logo";
-import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import { PRICING_TIERS } from "@shared/schema";
 import { PricingCard } from "@/components/pricing-card";
 
@@ -816,7 +815,6 @@ export default function LandingPage() {
             <p className="text-[11px] text-muted-foreground">
               &copy; 2026 ZeroClaw. All rights reserved.
             </p>
-            <PerplexityAttribution />
           </div>
         </div>
       </footer>
