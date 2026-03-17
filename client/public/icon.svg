@@ -1,4 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 1024 1024" fill="currentColor" stroke="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="url(#clawGradient)" stroke="none">
+<defs>
+  <linearGradient id="clawGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#2dd4bf"/>
+    <stop offset="50%" stop-color="#14b8a6"/>
+    <stop offset="100%" stop-color="#8b5cf6"/>
+  </linearGradient>
+</defs>
 <g transform="translate(0,1024) scale(0.1,-0.1)">
 <path d="M4000 8003 c-731 -50 -1322 -266 -1765 -645 -128 -110 -266 -256
 -349 -371 -75 -105 -155 -269 -169 -350 -15 -88 -4 -127 49 -186 95 -106 126
