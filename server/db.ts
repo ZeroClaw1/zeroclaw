@@ -28,12 +28,14 @@ export async function ensureTables() {
       created_at TEXT NOT NULL
     );
 
+    -- Drop and recreate password_reset_tokens if schema changed
+    DROP TABLE IF EXISTS password_reset_tokens;
     CREATE TABLE IF NOT EXISTS password_reset_tokens (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       token_hash TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      used_at TEXT
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ
     );
   `);
 
@@ -124,7 +126,7 @@ export async function persistUser(user: {
 export async function saveResetToken(id: string, userId: string, tokenHash: string, expiresAt: string) {
   if (!pool) return;
   await pool.query(
-    `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)`,
+    `INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4::timestamptz)`,
     [id, userId, tokenHash, expiresAt]
   );
 }
