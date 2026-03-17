@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#14b8a6" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Upper claw: from hinge, sweeps up and over to pointed tip -->
+  <path d="M4 12 C2.5 6.5, 7 2, 14 2.5 C18 3, 21.5 5.5, 21.5 9" />
+  <!-- Upper teeth: zigzag from tip inward -->
+  <polyline points="21.5 9, 19.5 10.5, 17.5 9, 15.5 10.5" />
+  <!-- Lower claw: from hinge, sweeps down and around to pointed tip -->
+  <path d="M4 12 C2.5 17.5, 7 22, 13 21.5 C17 21, 20 18.5, 20 15.5" />
+  <!-- Lower teeth: zigzag from tip inward -->
+  <polyline points="20 15.5, 18 14, 16 15.5, 15.5 14.5" />
+</svg>
