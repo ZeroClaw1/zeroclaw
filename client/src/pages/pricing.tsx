@@ -44,7 +44,7 @@ export default function PricingPage() {
       <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-xl border-b border-border/50">
         <nav className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <button
-            onClick={() => (window.location.hash = "#/")}
+            onClick={() => (window.location.href = "/")}
             className="flex items-center gap-3"
             data-testid="pricing-logo-home"
           >
@@ -54,7 +54,7 @@ export default function PricingPage() {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => (window.location.hash = "#/")}
+              onClick={() => (window.location.href = "/")}
               className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
               data-testid="pricing-back-home"
             >

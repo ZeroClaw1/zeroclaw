@@ -204,7 +204,7 @@ function CreateAgentStep({ onStepComplete }: { onStepComplete: () => void }) {
   const handleCreate = async () => {
     await apiRequest("POST", "/api/onboarding/step", { step: "firstAgentCreated" });
     onStepComplete();
-    window.location.hash = "#/agents";
+    window.location.href = "/agents";
   };
 
   return (
@@ -229,7 +229,7 @@ function RunPipelineStep({ onStepComplete }: { onStepComplete: () => void }) {
   const handleGo = async () => {
     await apiRequest("POST", "/api/onboarding/step", { step: "firstPipelineRun" });
     onStepComplete();
-    window.location.hash = "#/pipelines";
+    window.location.href = "/pipelines";
   };
 
   return (

@@ -151,7 +151,7 @@ export function TermsPage() {
       <p>
         {COMPANY} implements industry-standard security measures to protect your data. However, no system is completely
         secure, and {COMPANY} cannot guarantee absolute security. You are responsible for maintaining backups of your
-        Content. Our handling of personal data is described in our <a href="/#/privacy">Privacy Policy</a>.
+        Content. Our handling of personal data is described in our <a href="/privacy">Privacy Policy</a>.
       </p>
 
       <h2>9. Service Availability</h2>

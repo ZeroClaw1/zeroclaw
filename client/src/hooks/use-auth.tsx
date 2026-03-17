@@ -68,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Clear all cached data from the previous user
     queryClient.clear();
     // Redirect to landing page
-    window.location.hash = "#/";
+    window.location.href = "/";
   };
 
   return (

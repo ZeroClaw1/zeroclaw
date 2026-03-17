@@ -663,7 +663,7 @@ export default function LandingPage() {
 
           <AnimatedSection className="text-center mt-10">
             <button
-              onClick={() => (window.location.hash = "#/pricing")}
+              onClick={() => (window.location.href = "/pricing")}
               className="text-xs text-primary hover:text-primary/80 transition-colors font-semibold inline-flex items-center gap-1"
               data-testid="landing-view-full-pricing"
             >
@@ -791,7 +791,7 @@ export default function LandingPage() {
                 ))}
                 <li>
                   <button
-                    onClick={() => window.location.hash = "#/terms"}
+                    onClick={() => window.location.href = "/terms"}
                     className="text-xs text-muted-foreground hover:text-foreground transition-colors"
                     data-testid="footer-terms"
                   >
@@ -800,7 +800,7 @@ export default function LandingPage() {
                 </li>
                 <li>
                   <button
-                    onClick={() => window.location.hash = "#/privacy"}
+                    onClick={() => window.location.href = "/privacy"}
                     className="text-xs text-muted-foreground hover:text-foreground transition-colors"
                     data-testid="footer-privacy"
                   >

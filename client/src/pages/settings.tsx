@@ -500,7 +500,7 @@ function BillingTab() {
               </p>
             </div>
             <button
-              onClick={() => (window.location.hash = "#/pricing")}
+              onClick={() => (window.location.href = "/pricing")}
               className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary/80 transition-colors"
               data-testid="billing-upgrade-btn"
             >
