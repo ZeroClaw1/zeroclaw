@@ -1,10 +1,13 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { randomBytes } from "crypto";
+import { randomBytes, createHash } from "crypto";
 import bcrypt from "bcryptjs";
 import session from "express-session";
 import MemoryStoreFactory from "memorystore";
+import connectPgSimple from "connect-pg-simple";
+import { pool } from "./db";
+import { saveResetToken, validateResetToken, markResetTokenUsed } from "./db";
 import { storage } from "./storage";
 import { rateLimitMiddleware, checkTierLimit } from "./rate-limit";
 import { setBroadcast, executePipeline, cancelPipelineExecution, rerunPipeline } from "./engine";
@@ -187,13 +190,26 @@ export async function registerRoutes(
   // ========================================
   // Session middleware
   // ========================================
-  const MemoryStore = MemoryStoreFactory(session);
+  let sessionStore: session.Store;
+  if (pool) {
+    const PgStore = connectPgSimple(session);
+    sessionStore = new PgStore({
+      pool: pool,
+      tableName: "session",
+      createTableIfMissing: true,
+    });
+    console.log("[session] Using PostgreSQL session store");
+  } else {
+    const MemoryStore = MemoryStoreFactory(session);
+    sessionStore = new MemoryStore({ checkPeriod: 86400000 });
+    console.log("[session] Using in-memory session store");
+  }
 
   app.use(session({
     secret: process.env.SESSION_SECRET || randomBytes(32).toString("hex"),
     resave: false,
     saveUninitialized: false,
-    store: new MemoryStore({ checkPeriod: 86400000 }),
+    store: sessionStore,
     cookie: {
       maxAge: 7 * 24 * 60 * 60 * 1000,
       httpOnly: true,
@@ -287,6 +303,71 @@ export async function registerRoutes(
       return res.status(401).json({ error: "User not found" });
     }
     res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
+  });
+
+  // ========================================
+  // Password Reset
+  // ========================================
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email) return res.status(400).json({ error: "Email is required" });
+
+      // Always return success (don't reveal whether email exists)
+      const user = storage.getUserByEmail(email);
+      if (user && pool) {
+        const rawToken = randomBytes(32).toString("hex");
+        const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+        const tokenId = `rst-${randomBytes(4).toString("hex")}`;
+        const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+
+        await saveResetToken(tokenId, user.id, tokenHash, expiresAt);
+
+        // In production, this would send an email. For now, log and return the token.
+        console.log(`[auth] Password reset token for ${email}: ${rawToken}`);
+        // Return the token in the response for now (no email service yet)
+        return res.json({ message: "Password reset token generated", resetToken: rawToken });
+      }
+
+      res.json({ message: "If an account exists with that email, a reset link has been generated" });
+    } catch (err) {
+      console.error("Forgot password error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.post("/api/auth/reset-password", async (req, res) => {
+    try {
+      const { token, password } = req.body;
+      if (!token || !password) return res.status(400).json({ error: "Token and password are required" });
+
+      const strengthError = validatePasswordStrength(password);
+      if (strengthError) return res.status(400).json({ error: strengthError });
+
+      if (!pool) return res.status(500).json({ error: "Database not available" });
+
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      const userId = await validateResetToken(tokenHash);
+      if (!userId) return res.status(400).json({ error: "Invalid or expired reset token" });
+
+      const user = storage.getUserById(userId);
+      if (!user) return res.status(400).json({ error: "User not found" });
+
+      // Update password in memory
+      user.passwordHash = await hashPassword(password);
+
+      // Persist to DB via the write-through
+      const { persistUser } = await import("./db");
+      await persistUser(user);
+
+      // Mark token as used
+      await markResetTokenUsed(tokenHash);
+
+      res.json({ message: "Password has been reset. You can now log in." });
+    } catch (err) {
+      console.error("Reset password error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   // ========================================

@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { persistUser, loadUsersFromDb } from "./db";
 import type {
   Pipeline, InsertPipeline, PipelineStep,
   Agent, InsertAgent,
@@ -211,6 +212,52 @@ export class MemStorage implements IStorage {
     this.seedGlobal();
   }
 
+  /** Load persisted users from PostgreSQL on startup */
+  async initFromDb() {
+    try {
+      const dbUsers = await loadUsersFromDb();
+      for (const u of dbUsers) {
+        const user: User = {
+          id: u.id,
+          email: u.email,
+          username: u.username,
+          passwordHash: u.passwordHash,
+          role: u.role as User["role"],
+          tier: u.tier as User["tier"],
+          suspended: u.suspended,
+          suspendedAt: u.suspendedAt,
+          onboarding: u.onboarding,
+          teamId: u.teamId,
+          createdAt: u.createdAt,
+        };
+        this.users.set(user.id, user);
+        // Initialize per-user config stores if not already set
+        if (!this.openClawConfigs.has(user.id)) {
+          this.openClawConfigs.set(user.id, { ...DEFAULT_OPENCLAW_CONFIG });
+        }
+        if (!this.dashboardSettingsByUser.has(user.id)) {
+          this.dashboardSettingsByUser.set(user.id, { ...DEFAULT_DASHBOARD_SETTINGS, widgetLayout: [...DEFAULT_DASHBOARD_SETTINGS.widgetLayout!] });
+        }
+        if (!this.activityByUser.has(user.id)) this.activityByUser.set(user.id, []);
+        if (!this.notificationsByUser.has(user.id)) this.notificationsByUser.set(user.id, []);
+        if (!this.auditLogByUser.has(user.id)) this.auditLogByUser.set(user.id, []);
+        if (!this.authEnabledByUser.has(user.id)) this.authEnabledByUser.set(user.id, false);
+      }
+      if (dbUsers.length > 0) {
+        console.log(`[storage] Loaded ${dbUsers.length} user(s) from database`);
+      }
+    } catch (err) {
+      console.error("[storage] Failed to load users from database:", err);
+    }
+  }
+
+  /** Fire-and-forget persist a user to PostgreSQL */
+  private persistUserToDb(user: User) {
+    persistUser(user).catch((err) => {
+      console.error(`[storage] Failed to persist user ${user.id}:`, err);
+    });
+  }
+
   private seedGlobal() {
     // Pipeline templates (global)
     this.pipelineTemplates = [
@@ -273,6 +320,7 @@ export class MemStorage implements IStorage {
     this.notificationsByUser.set(id, []);
     this.auditLogByUser.set(id, []);
     this.authEnabledByUser.set(id, false);
+    this.persistUserToDb(user);
     return user;
   }
 
@@ -1078,6 +1126,7 @@ export class MemStorage implements IStorage {
     const user = this.users.get(userId);
     if (!user) return undefined;
     user.tier = tier;
+    this.persistUserToDb(user);
     return user;
   }
 
@@ -1086,6 +1135,7 @@ export class MemStorage implements IStorage {
     if (!user) return undefined;
     user.suspended = true;
     user.suspendedAt = new Date().toISOString();
+    this.persistUserToDb(user);
     return user;
   }
 
@@ -1094,6 +1144,7 @@ export class MemStorage implements IStorage {
     if (!user) return undefined;
     user.suspended = false;
     user.suspendedAt = null;
+    this.persistUserToDb(user);
     return user;
   }
 
@@ -1101,6 +1152,7 @@ export class MemStorage implements IStorage {
     const user = this.users.get(userId);
     if (!user) return undefined;
     user.role = role;
+    this.persistUserToDb(user);
     return user;
   }
 
