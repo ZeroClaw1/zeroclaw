@@ -61,6 +61,17 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+  const user = storage.getUserById(req.session.userId);
+  if (!user || user.role !== "admin") {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  next();
+}
+
 function analyzeMarkdownIntoPhases(markdown: string): Array<{ id: string; title: string; tasks: string[] }> {
   const phases: Array<{ id: string; title: string; tasks: string[] }> = [];
   const lines = markdown.split("\n");
@@ -232,7 +243,7 @@ export async function registerRoutes(
       const passwordHash = await hashPassword(password);
       const user = storage.createUser({ email, username, passwordHash });
       req.session.userId = user.id;
-      res.status(201).json({ id: user.id, email: user.email, username: user.username, tier: user.tier, onboarding: user.onboarding });
+      res.status(201).json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
     } catch (err) {
       console.error("Register error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -250,8 +261,11 @@ export async function registerRoutes(
       if (!user || !(await verifyPassword(password, user.passwordHash))) {
         return res.status(401).json({ error: "Invalid email or password" });
       }
+      if (user.suspended) {
+        return res.status(403).json({ error: "Account suspended" });
+      }
       req.session.userId = user.id;
-      res.json({ id: user.id, email: user.email, username: user.username, tier: user.tier, onboarding: user.onboarding });
+      res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
     } catch (err) {
       console.error("Login error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -272,7 +286,7 @@ export async function registerRoutes(
     if (!user) {
       return res.status(401).json({ error: "User not found" });
     }
-    res.json({ id: user.id, email: user.email, username: user.username, tier: user.tier, onboarding: user.onboarding });
+    res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
   });
 
   // ========================================
@@ -1455,6 +1469,66 @@ export async function registerRoutes(
         buildsThisMonth: pipelines.filter(p => p.status === "success" || p.status === "failed").length,
       },
     });
+  });
+
+  // ========================================
+  // Admin API
+  // ========================================
+
+  app.get("/api/admin/users", requireAdmin, (_req, res) => {
+    const users = storage.getAllUsers().map(u => ({
+      id: u.id,
+      email: u.email,
+      username: u.username,
+      role: u.role,
+      tier: u.tier,
+      suspended: u.suspended,
+      suspendedAt: u.suspendedAt,
+      createdAt: u.createdAt,
+    }));
+    res.json(users);
+  });
+
+  app.patch("/api/admin/users/:id/tier", requireAdmin, (req, res) => {
+    const { tier } = req.body;
+    const userId = req.params.id as string;
+    if (!["free", "pro", "team", "enterprise"].includes(tier)) {
+      return res.status(400).json({ error: "Invalid tier" });
+    }
+    const user = storage.updateUserTier(userId, tier);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, suspended: user.suspended });
+  });
+
+  app.patch("/api/admin/users/:id/suspend", requireAdmin, (req, res) => {
+    const { suspended } = req.body;
+    const userId = req.params.id as string;
+    const user = suspended ? storage.suspendUser(userId) : storage.unsuspendUser(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    if (user.role === "admin") return res.status(400).json({ error: "Cannot suspend admin" });
+    res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, suspended: user.suspended, suspendedAt: user.suspendedAt });
+  });
+
+  app.get("/api/admin/stats", requireAdmin, (_req, res) => {
+    const stats = storage.getAdminStats();
+    res.json(stats);
+  });
+
+  app.get("/api/admin/revenue", requireAdmin, (_req, res) => {
+    const users = storage.getAllUsers();
+    let mrr = 0;
+    for (const u of users) {
+      const tierInfo = PRICING_TIERS.find(t => t.id === u.tier);
+      if (tierInfo && tierInfo.price > 0) {
+        mrr += tierInfo.price;
+      }
+    }
+    const tierRevenue: Record<string, { count: number; revenue: number }> = {};
+    for (const tier of PRICING_TIERS) {
+      const count = users.filter(u => u.tier === tier.id).length;
+      tierRevenue[tier.id] = { count, revenue: count * Math.max(tier.price, 0) };
+    }
+    res.json({ mrr, arr: mrr * 12, tierRevenue });
   });
 
   return httpServer;

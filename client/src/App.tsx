@@ -23,10 +23,19 @@ import SecretsPage from "@/pages/secrets";
 import WebhooksPage from "@/pages/webhooks";
 import MarketplacePage from "@/pages/marketplace";
 import AuditLogPage from "@/pages/audit-log";
+import AdminOverviewPage from "@/pages/admin/admin-overview";
+import AdminUsersPage from "@/pages/admin/admin-users";
+import AdminSubscriptionsPage from "@/pages/admin/admin-subscriptions";
 import NotFound from "@/pages/not-found";
 import { TermsPage, PrivacyPage } from "@/pages/legal";
 import PricingPage from "@/pages/pricing";
 import { Loader2 } from "lucide-react";
+
+function AdminRoute({ component: Component }: { component: React.ComponentType }) {
+  const { user } = useAuth();
+  if (!user || user.role !== "admin") return <NotFound />;
+  return <Component />;
+}
 
 function AppRouter() {
   return (
@@ -45,6 +54,9 @@ function AppRouter() {
       <Route path="/webhooks" component={WebhooksPage} />
       <Route path="/marketplace" component={MarketplacePage} />
       <Route path="/audit-log" component={AuditLogPage} />
+      <Route path="/admin/users">{() => <AdminRoute component={AdminUsersPage} />}</Route>
+      <Route path="/admin/subscriptions">{() => <AdminRoute component={AdminSubscriptionsPage} />}</Route>
+      <Route path="/admin">{() => <AdminRoute component={AdminOverviewPage} />}</Route>
       <Route component={NotFound} />
     </Switch>
   );

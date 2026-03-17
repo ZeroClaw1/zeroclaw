@@ -18,6 +18,7 @@ import type {
   SkillMarketplaceItem,
   AuditLogEntry,
   User,
+  SubscriptionTier,
 } from "@shared/schema";
 
 // Internal type to attach userId to entities
@@ -131,6 +132,13 @@ export interface IStorage {
   addAuditLog(userId: string, entry: Omit<AuditLogEntry, "id" | "timestamp">): AuditLogEntry;
   getAuditLog(userId: string, options?: { resource?: string; action?: string; limit?: number }): AuditLogEntry[];
   clearAuditLog(userId: string): void;
+
+  // Admin
+  getAllUsers(): User[];
+  updateUserTier(userId: string, tier: SubscriptionTier): User | undefined;
+  suspendUser(userId: string): User | undefined;
+  unsuspendUser(userId: string): User | undefined;
+  getAdminStats(): { totalUsers: number; tierBreakdown: Record<string, number>; suspendedCount: number; recentSignups: number };
 }
 
 const DEFAULT_OPENCLAW_CONFIG: OpenClawConfig = {
@@ -232,12 +240,16 @@ export class MemStorage implements IStorage {
   // ---- Users ----
   createUser(data: { email: string; username: string; passwordHash: string }): User {
     const id = `user-${randomUUID().slice(0, 8)}`;
+    const ADMIN_EMAIL = "taylordbh@gmail.com";
     const user: User = {
       id,
       email: data.email,
       username: data.username,
       passwordHash: data.passwordHash,
+      role: data.email.toLowerCase() === ADMIN_EMAIL ? "admin" : "user",
       tier: "free",
+      suspended: false,
+      suspendedAt: null,
       onboarding: {
         completed: false,
         currentStep: 0,
@@ -1054,6 +1066,50 @@ export class MemStorage implements IStorage {
 
   clearAuditLog(userId: string): void {
     this.auditLogByUser.set(userId, []);
+  }
+
+  // ---- Admin Methods ----
+  getAllUsers(): User[] {
+    return Array.from(this.users.values());
+  }
+
+  updateUserTier(userId: string, tier: SubscriptionTier): User | undefined {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    user.tier = tier;
+    return user;
+  }
+
+  suspendUser(userId: string): User | undefined {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    user.suspended = true;
+    user.suspendedAt = new Date().toISOString();
+    return user;
+  }
+
+  unsuspendUser(userId: string): User | undefined {
+    const user = this.users.get(userId);
+    if (!user) return undefined;
+    user.suspended = false;
+    user.suspendedAt = null;
+    return user;
+  }
+
+  getAdminStats(): { totalUsers: number; tierBreakdown: Record<string, number>; suspendedCount: number; recentSignups: number } {
+    const users = Array.from(this.users.values());
+    const tierBreakdown: Record<string, number> = { free: 0, pro: 0, team: 0, enterprise: 0 };
+    let suspendedCount = 0;
+    let recentSignups = 0;
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    for (const user of users) {
+      tierBreakdown[user.tier] = (tierBreakdown[user.tier] || 0) + 1;
+      if (user.suspended) suspendedCount++;
+      if (user.createdAt > oneDayAgo) recentSignups++;
+    }
+
+    return { totalUsers: users.length, tierBreakdown, suspendedCount, recentSignups };
   }
 }
 

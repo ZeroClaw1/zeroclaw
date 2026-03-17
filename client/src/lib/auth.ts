@@ -1,10 +1,11 @@
 import { apiRequest } from "./queryClient";
-import type { SubscriptionTier, OnboardingState } from "@shared/schema";
+import type { SubscriptionTier, OnboardingState, UserRole } from "@shared/schema";
 
 export interface AuthUser {
   id: string;
   email: string;
   username: string;
+  role: UserRole;
   tier: SubscriptionTier;
   onboarding: OnboardingState;
 }

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 // ---- Shared Types (used across multiple entities) ----
 export type SubscriptionTier = "free" | "pro" | "team" | "enterprise";
+export type UserRole = "user" | "admin";
 
 export interface OnboardingState {
   completed: boolean;
@@ -21,7 +22,10 @@ export interface User {
   email: string;
   username: string;
   passwordHash: string;
+  role: UserRole;
   tier: SubscriptionTier;
+  suspended: boolean;
+  suspendedAt: string | null;
   onboarding: OnboardingState;
   teamId: string | null;
   createdAt: string;

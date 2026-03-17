@@ -16,6 +16,7 @@ import {
   ScrollText,
   LogOut,
   User,
+  Shield,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -143,6 +144,24 @@ export function AppSidebar() {
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
+            {user?.role === "admin" && (
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={location.startsWith("/admin")}
+                  className={
+                    location.startsWith("/admin")
+                      ? "bg-red-500/10 text-red-400 border-l-2 border-red-500"
+                      : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                  }
+                >
+                  <Link href="/admin" className="flex items-center gap-3 px-4 py-2 text-xs" data-testid="sidebar-admin-link">
+                    <Shield className="h-4 w-4" />
+                    <span>Admin</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            )}
           </SidebarMenu>
         </SidebarGroup>
       </SidebarContent>
