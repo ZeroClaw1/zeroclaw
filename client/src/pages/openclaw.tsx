@@ -41,6 +41,9 @@ import {
   ClipboardCopy,
   Unplug,
   Activity,
+  X,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
@@ -63,6 +66,219 @@ function LatencyBadge({ latency }: { latency: number }) {
       <Activity className="h-2.5 w-2.5 mr-1" />
       {latency}ms
     </Badge>
+  );
+}
+
+function ModelConfiguration({ config }: { config: OpenClawConfig | undefined }) {
+  const { toast } = useToast();
+  const [editingModel, setEditingModel] = useState(false);
+  const [modelInput, setModelInput] = useState("");
+  const [newFallback, setNewFallback] = useState("");
+
+  const saveModelMutation = useMutation({
+    mutationFn: async (model: string) => {
+      const res = await apiRequest("PATCH", "/api/openclaw/config", { model });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/openclaw/config"] });
+      setEditingModel(false);
+      toast({ title: "Primary model updated" });
+    },
+  });
+
+  const saveFallbacksMutation = useMutation({
+    mutationFn: async (fallbackModels: string[]) => {
+      const res = await apiRequest("PATCH", "/api/openclaw/config", { fallbackModels });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/openclaw/config"] });
+      toast({ title: "Fallback chain updated" });
+    },
+  });
+
+  const fallbacks = config?.fallbackModels ?? [];
+
+  const addFallback = () => {
+    const trimmed = newFallback.trim();
+    if (!trimmed || fallbacks.includes(trimmed)) return;
+    saveFallbacksMutation.mutate([...fallbacks, trimmed]);
+    setNewFallback("");
+  };
+
+  const removeFallback = (index: number) => {
+    saveFallbacksMutation.mutate(fallbacks.filter((_, i) => i !== index));
+  };
+
+  const moveFallback = (index: number, direction: -1 | 1) => {
+    const newArr = [...fallbacks];
+    const target = index + direction;
+    if (target < 0 || target >= newArr.length) return;
+    [newArr[index], newArr[target]] = [newArr[target], newArr[index]];
+    saveFallbacksMutation.mutate(newArr);
+  };
+
+  return (
+    <Card className="border border-border/50 bg-card/80">
+      <CardHeader className="px-4 pt-4 pb-2">
+        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-foreground flex items-center gap-2">
+          <Brain className="h-4 w-4 text-accent" />
+          Model Configuration
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-4 pb-4 space-y-4">
+        {/* Primary Model */}
+        <div className="space-y-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+            Primary Model
+          </span>
+          {editingModel ? (
+            <div className="flex gap-2">
+              <Input
+                value={modelInput}
+                onChange={(e) => setModelInput(e.target.value)}
+                placeholder="e.g. claude-3-opus, gpt-4, llama-3.1-70b, my-custom-model"
+                className="text-xs bg-background border-border h-9"
+                data-testid="model-input"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && modelInput.trim()) saveModelMutation.mutate(modelInput.trim());
+                  if (e.key === "Escape") setEditingModel(false);
+                }}
+                autoFocus
+              />
+              <Button
+                size="sm"
+                className="h-9 text-xs"
+                disabled={!modelInput.trim() || saveModelMutation.isPending}
+                onClick={() => saveModelMutation.mutate(modelInput.trim())}
+                data-testid="model-save"
+              >
+                {saveModelMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-9 text-xs"
+                onClick={() => setEditingModel(false)}
+                data-testid="model-cancel"
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-2 p-3 rounded-md bg-primary/5 border border-primary/20 cursor-pointer hover:border-primary/40 transition-colors group"
+              onClick={() => { setModelInput(config?.model ?? ""); setEditingModel(true); }}
+              data-testid="model-display"
+            >
+              <Brain className="h-4 w-4 text-primary" />
+              <span className="text-xs font-semibold text-foreground">{config?.model}</span>
+              <Badge variant="outline" className="text-[8px] ml-auto border-primary/30 text-primary group-hover:hidden">
+                Active
+              </Badge>
+              <span className="text-[9px] text-muted-foreground ml-auto hidden group-hover:inline">
+                Click to edit
+              </span>
+            </div>
+          )}
+          <p className="text-[9px] text-muted-foreground">
+            Enter any model name — hosted or self-hosted (e.g. ollama/llama3, my-api/custom-model)
+          </p>
+        </div>
+
+        {/* Fallback Chain */}
+        <div className="space-y-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+            Fallback Chain
+          </span>
+          <p className="text-[9px] text-muted-foreground mb-2">
+            If the primary model fails, these are tried in order
+          </p>
+          {fallbacks.map((model, i) => (
+            <div
+              key={`${model}-${i}`}
+              className="flex items-center gap-2 p-2.5 rounded-md bg-muted/20 border border-border/30 group"
+            >
+              <span className="text-[9px] text-muted-foreground tabular-nums w-4">{i + 1}.</span>
+              <span className="text-xs text-foreground flex-1">{model}</span>
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5"
+                  disabled={i === 0}
+                  onClick={() => moveFallback(i, -1)}
+                  data-testid={`fallback-up-${i}`}
+                >
+                  <ArrowUp className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5"
+                  disabled={i === fallbacks.length - 1}
+                  onClick={() => moveFallback(i, 1)}
+                  data-testid={`fallback-down-${i}`}
+                >
+                  <ArrowDown className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeFallback(i)}
+                  data-testid={`fallback-remove-${i}`}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+          ))}
+          <div className="flex gap-2 pt-1">
+            <Input
+              value={newFallback}
+              onChange={(e) => setNewFallback(e.target.value)}
+              placeholder="Add fallback model..."
+              className="text-xs bg-background border-border h-8"
+              data-testid="fallback-input"
+              onKeyDown={(e) => { if (e.key === "Enter") addFallback(); }}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs gap-1"
+              disabled={!newFallback.trim() || saveFallbacksMutation.isPending}
+              onClick={addFallback}
+              data-testid="fallback-add"
+            >
+              <Plus className="h-3 w-3" /> Add
+            </Button>
+          </div>
+        </div>
+
+        {/* Supported Providers */}
+        <div className="pt-2 border-t border-border/30">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold block mb-2">
+            Common Providers
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            {["Anthropic", "OpenAI", "Google", "DeepSeek", "Ollama", "OpenRouter", "Self-hosted"].map((p) => (
+              <Badge
+                key={p}
+                variant="outline"
+                className="text-[9px] border-border/40 text-muted-foreground"
+              >
+                {p}
+              </Badge>
+            ))}
+          </div>
+          <p className="text-[9px] text-muted-foreground mt-2">
+            Any model accessible from your OpenClaw gateway is supported — type any model identifier above
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -416,63 +632,7 @@ export default function OpenClawPage() {
 
         {/* Models Tab */}
         <TabsContent value="models">
-          <Card className="border border-border/50 bg-card/80">
-            <CardHeader className="px-4 pt-4 pb-2">
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-foreground flex items-center gap-2">
-                <Brain className="h-4 w-4 text-accent" />
-                Model Configuration
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4 space-y-4">
-              <div className="space-y-1.5">
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-                  Primary Model
-                </span>
-                <div className="flex items-center gap-2 p-3 rounded-md bg-primary/5 border border-primary/20">
-                  <Brain className="h-4 w-4 text-primary" />
-                  <span className="text-xs font-semibold text-foreground">{config?.model}</span>
-                  <Badge variant="outline" className="text-[8px] ml-auto border-primary/30 text-primary">
-                    Active
-                  </Badge>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-                  Fallback Chain
-                </span>
-                <p className="text-[9px] text-muted-foreground mb-2">
-                  If the primary model fails, these are tried in order
-                </p>
-                {config?.fallbackModels.map((model, i) => (
-                  <div
-                    key={model}
-                    className="flex items-center gap-2 p-2.5 rounded-md bg-muted/20 border border-border/30"
-                  >
-                    <span className="text-[9px] text-muted-foreground tabular-nums w-4">{i + 1}.</span>
-                    <span className="text-xs text-foreground">{model}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="pt-2 border-t border-border/30">
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold block mb-2">
-                  Supported Providers
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {["Anthropic", "OpenAI", "Google", "DeepSeek", "Ollama", "OpenRouter"].map((p) => (
-                    <Badge
-                      key={p}
-                      variant="outline"
-                      className="text-[9px] border-border/40 text-muted-foreground"
-                    >
-                      {p}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <ModelConfiguration config={config} />
         </TabsContent>
 
         {/* Skills Tab */}
