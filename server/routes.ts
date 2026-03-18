@@ -262,7 +262,14 @@ export async function registerRoutes(
       const passwordHash = await hashPassword(password);
       const user = storage.createUser({ email, username, passwordHash });
       req.session.userId = user.id;
-      res.status(201).json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
+      // Explicitly save session to ensure it's persisted to the store before responding
+      req.session.save((err) => {
+        if (err) {
+          console.error("Session save error (register):", err);
+          return res.status(500).json({ error: "Session error" });
+        }
+        res.status(201).json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
+      });
     } catch (err) {
       console.error("Register error:", err);
       res.status(500).json({ error: "Internal server error" });
@@ -284,7 +291,14 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Account suspended" });
       }
       req.session.userId = user.id;
-      res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
+      // Explicitly save session to ensure it's persisted to the store before responding
+      req.session.save((err) => {
+        if (err) {
+          console.error("Session save error (login):", err);
+          return res.status(500).json({ error: "Session error" });
+        }
+        res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
+      });
     } catch (err) {
       console.error("Login error:", err);
       res.status(500).json({ error: "Internal server error" });
