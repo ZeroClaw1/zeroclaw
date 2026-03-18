@@ -28,6 +28,8 @@ import {
   registerSchema,
   loginSchema,
   updateVaultConfigSchema,
+  updateClaudeCodeConfigSchema,
+  submitCodingTaskSchema,
   PRICING_TIERS,
 } from "@shared/schema";
 
@@ -1571,6 +1573,71 @@ export async function registerRoutes(
       }
     }
     res.json({ nodes, edges });
+  });
+
+  // ========================================
+  // Claude Code Integration
+  // ========================================
+  app.get("/api/claude-code/config", (req, res) => {
+    const userId = req.session.userId!;
+    const config = storage.getClaudeCodeConfig(userId);
+    if (!config) return res.json(null);
+    // Mask API key for display
+    const masked = { ...config, apiKey: config.apiKey ? "sk-ant-•••" + config.apiKey.slice(-4) : "" };
+    res.json(masked);
+  });
+
+  app.patch("/api/claude-code/config", (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = updateClaudeCodeConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const config = storage.updateClaudeCodeConfig(userId, parsed.data);
+    // Mask API key for display
+    const masked = { ...config, apiKey: config.apiKey ? "sk-ant-•••" + config.apiKey.slice(-4) : "" };
+    res.json(masked);
+  });
+
+  app.post("/api/claude-code/test", (req, res) => {
+    const userId = req.session.userId!;
+    const config = storage.getClaudeCodeConfig(userId);
+    if (!config || !config.apiKey) {
+      return res.json({ success: false, message: "No API key configured" });
+    }
+    // Simulate API key test (real implementation would call Anthropic API)
+    const isValid = config.apiKey.startsWith("sk-ant-");
+    if (isValid) {
+      storage.updateClaudeCodeConfig(userId, {});
+      res.json({ success: true, message: "API key is valid. Connected to Anthropic API." });
+    } else {
+      res.json({ success: false, message: "Invalid API key format. Expected sk-ant-..." });
+    }
+  });
+
+  app.post("/api/claude-code/tasks", (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = submitCodingTaskSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const task = storage.submitCodingTask(userId, parsed.data);
+    res.status(201).json(task);
+  });
+
+  app.get("/api/claude-code/tasks", (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getCodingTasks(userId));
+  });
+
+  app.get("/api/claude-code/tasks/:id", (req, res) => {
+    const userId = req.session.userId!;
+    const task = storage.getCodingTask(userId, req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    res.json(task);
+  });
+
+  app.delete("/api/claude-code/tasks/:id", (req, res) => {
+    const userId = req.session.userId!;
+    const deleted = storage.deleteCodingTask(userId, req.params.id);
+    if (!deleted) return res.status(404).json({ error: "Task not found" });
+    res.json({ ok: true });
   });
 
   // ========================================

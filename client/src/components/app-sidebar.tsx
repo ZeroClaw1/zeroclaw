@@ -19,6 +19,7 @@ import {
   User,
   Shield,
   Brain,
+  Code2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ const navItems = [
   { label: "Planning", icon: ClipboardList, href: "/planning" },
   { label: "OpenClaw", icon: Terminal, href: "/openclaw" },
   { label: "Context", icon: Brain, href: "/context" },
+  { label: "Claude Code", icon: Code2, href: "/claude-code" },
   { label: "Logs", icon: Terminal, href: "/logs" },
   { label: "GitHub", icon: Github, href: "/github" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
@@ -73,6 +75,22 @@ function VaultStatusDot() {
     <div
       className="h-1.5 w-1.5 rounded-full bg-cyan-400 ml-auto"
       data-testid="vault-status-dot"
+    />
+  );
+}
+
+function ClaudeCodeStatusDot() {
+  const { data } = useQuery<{ status: string } | null>({
+    queryKey: ["/api/claude-code/config"],
+    refetchInterval: 10000,
+  });
+
+  if (!data || data.status !== "connected") return null;
+
+  return (
+    <div
+      className="h-1.5 w-1.5 rounded-full bg-emerald-400 ml-auto"
+      data-testid="claude-code-status-dot"
     />
   );
 }
@@ -151,6 +169,7 @@ export function AppSidebar() {
                         <Zap className="h-3 w-3 ml-auto text-primary pulse-live" />
                       )}
                       {item.label === "Context" && <VaultStatusDot />}
+                      {item.label === "Claude Code" && <ClaudeCodeStatusDot />}
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

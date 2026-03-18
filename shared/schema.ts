@@ -325,7 +325,7 @@ export interface SkillMarketplaceItem {
   id: string;
   name: string;
   description: string;
-  category: "integration" | "devops" | "security" | "monitoring" | "utility" | "knowledge";
+  category: "integration" | "devops" | "security" | "monitoring" | "utility" | "knowledge" | "coding";
   version: string;
   author: string;
   downloads: number;
@@ -683,6 +683,55 @@ export interface ContextSession {
   startedAt: string;
   status: "active" | "idle" | "expired";
 }
+
+// ---- Claude Code Integration ----
+export type ClaudeCodeStatus = "connected" | "disconnected" | "error";
+export type CodingTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface ClaudeCodeConfig {
+  id: string;
+  apiKey: string;
+  model: string;
+  maxTokens: number;
+  status: ClaudeCodeStatus;
+  lastUsed: string | null;
+  totalTasks: number;
+  totalTokensUsed: number;
+  useObsidianContext: boolean;
+  allowedTools: string[];
+  systemPrompt: string;
+}
+
+export interface CodingTask {
+  id: string;
+  title: string;
+  prompt: string;
+  status: CodingTaskStatus;
+  model: string;
+  response: string | null;
+  tokensUsed: number;
+  contextNotes: string[];
+  createdAt: string;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export const updateClaudeCodeConfigSchema = z.object({
+  apiKey: z.string().optional(),
+  model: z.string().optional(),
+  maxTokens: z.number().min(256).max(128000).optional(),
+  useObsidianContext: z.boolean().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  systemPrompt: z.string().optional(),
+});
+export type UpdateClaudeCodeConfig = z.infer<typeof updateClaudeCodeConfigSchema>;
+
+export const submitCodingTaskSchema = z.object({
+  title: z.string().min(1, "Title is required"),
+  prompt: z.string().min(1, "Prompt is required"),
+  contextNoteIds: z.array(z.string()).optional(),
+});
+export type SubmitCodingTask = z.infer<typeof submitCodingTaskSchema>;
 
 export const updateVaultConfigSchema = z.object({
   vaultPath: z.string().optional(),

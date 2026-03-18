@@ -24,6 +24,10 @@ import type {
   VaultNote,
   ContextSession,
   UpdateVaultConfig,
+  ClaudeCodeConfig,
+  UpdateClaudeCodeConfig,
+  CodingTask,
+  SubmitCodingTask,
 } from "@shared/schema";
 
 // Internal type to attach userId to entities
@@ -142,6 +146,15 @@ export interface IStorage {
   installObsidianSkill(userId: string, vaultPath: string, syncMethod: ObsidianVaultConfig["syncMethod"]): ObsidianVaultConfig;
   uninstallObsidianSkill(userId: string): boolean;
 
+  // Claude Code
+  getClaudeCodeConfig(userId: string): ClaudeCodeConfig | null;
+  updateClaudeCodeConfig(userId: string, data: UpdateClaudeCodeConfig): ClaudeCodeConfig;
+  getCodingTasks(userId: string): CodingTask[];
+  getCodingTask(userId: string, taskId: string): CodingTask | undefined;
+  submitCodingTask(userId: string, task: SubmitCodingTask): CodingTask;
+  updateCodingTask(userId: string, taskId: string, updates: Partial<CodingTask>): CodingTask | undefined;
+  deleteCodingTask(userId: string, taskId: string): boolean;
+
   // Audit Log
   addAuditLog(userId: string, entry: Omit<AuditLogEntry, "id" | "timestamp">): AuditLogEntry;
   getAuditLog(userId: string, options?: { resource?: string; action?: string; limit?: number }): AuditLogEntry[];
@@ -216,6 +229,10 @@ export class MemStorage implements IStorage {
   private artifacts: Map<string, WithUserId<PipelineArtifact>> = new Map();
   private agentTasks: Map<string, WithUserId<AgentTask>> = new Map();
   private auditLogByUser: Map<string, AuditLogEntry[]> = new Map();
+
+  // Claude Code data (per-user)
+  private claudeCodeConfigs: Map<string, ClaudeCodeConfig> = new Map();
+  private codingTasks: Map<string, CodingTask[]> = new Map();
 
   // Vault / Context data (per-user)
   private vaultConfigs: Map<string, ObsidianVaultConfig> = new Map();
@@ -1199,6 +1216,115 @@ export class MemStorage implements IStorage {
     this.initializeVaultData(userId, vaultPath, syncMethod);
     this.addAuditLog(userId, { action: "install", resource: "skill", resourceId: "skill-013", resourceName: "Obsidian Vault", details: `Connected vault at ${vaultPath}`, user: "user" });
     return this.vaultConfigs.get(userId)!;
+  }
+
+  // ---- Claude Code ----
+  getClaudeCodeConfig(userId: string): ClaudeCodeConfig | null {
+    return this.claudeCodeConfigs.get(userId) ?? null;
+  }
+
+  updateClaudeCodeConfig(userId: string, data: UpdateClaudeCodeConfig): ClaudeCodeConfig {
+    let config = this.claudeCodeConfigs.get(userId);
+    if (!config) {
+      config = {
+        id: `cc-${randomUUID().slice(0, 8)}`,
+        apiKey: "",
+        model: "claude-sonnet-4-20250514",
+        maxTokens: 8192,
+        status: "disconnected",
+        lastUsed: null,
+        totalTasks: 0,
+        totalTokensUsed: 0,
+        useObsidianContext: false,
+        allowedTools: ["Read", "Edit", "Bash", "Write"],
+        systemPrompt: "",
+      };
+      this.claudeCodeConfigs.set(userId, config);
+    }
+    if (data.apiKey !== undefined) {
+      config.apiKey = data.apiKey;
+      config.status = data.apiKey ? "connected" : "disconnected";
+    }
+    if (data.model !== undefined) config.model = data.model;
+    if (data.maxTokens !== undefined) config.maxTokens = data.maxTokens;
+    if (data.useObsidianContext !== undefined) config.useObsidianContext = data.useObsidianContext;
+    if (data.allowedTools !== undefined) config.allowedTools = data.allowedTools;
+    if (data.systemPrompt !== undefined) config.systemPrompt = data.systemPrompt;
+    return { ...config };
+  }
+
+  getCodingTasks(userId: string): CodingTask[] {
+    return (this.codingTasks.get(userId) ?? []).slice().sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  getCodingTask(userId: string, taskId: string): CodingTask | undefined {
+    const tasks = this.codingTasks.get(userId) ?? [];
+    return tasks.find(t => t.id === taskId);
+  }
+
+  submitCodingTask(userId: string, task: SubmitCodingTask): CodingTask {
+    const config = this.claudeCodeConfigs.get(userId);
+    const id = `ctask-${randomUUID().slice(0, 8)}`;
+    const codingTask: CodingTask = {
+      id,
+      title: task.title,
+      prompt: task.prompt,
+      status: "queued",
+      model: config?.model || "claude-sonnet-4-20250514",
+      response: null,
+      tokensUsed: 0,
+      contextNotes: task.contextNoteIds || [],
+      createdAt: new Date().toISOString(),
+      completedAt: null,
+      error: null,
+    };
+    let tasks = this.codingTasks.get(userId);
+    if (!tasks) {
+      tasks = [];
+      this.codingTasks.set(userId, tasks);
+    }
+    tasks.push(codingTask);
+
+    // Update config stats
+    if (config) {
+      config.totalTasks += 1;
+      config.lastUsed = new Date().toISOString();
+    }
+
+    // Simulate task execution
+    setTimeout(() => {
+      codingTask.status = "running";
+    }, 500);
+    setTimeout(() => {
+      codingTask.status = "completed";
+      codingTask.response = `Task received. Claude Code integration will process this when connected to the Anthropic API.\n\nYour prompt:\n\`\`\`\n${task.prompt}\n\`\`\`\n\nModel: ${codingTask.model}\nContext notes: ${codingTask.contextNotes.length > 0 ? codingTask.contextNotes.join(", ") : "none"}`;
+      codingTask.tokensUsed = Math.floor(200 + Math.random() * 800);
+      codingTask.completedAt = new Date().toISOString();
+      if (config) {
+        config.totalTokensUsed += codingTask.tokensUsed;
+      }
+    }, 2000);
+
+    return codingTask;
+  }
+
+  updateCodingTask(userId: string, taskId: string, updates: Partial<CodingTask>): CodingTask | undefined {
+    const tasks = this.codingTasks.get(userId) ?? [];
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return undefined;
+    Object.assign(task, updates);
+    return { ...task };
+  }
+
+  deleteCodingTask(userId: string, taskId: string): boolean {
+    const tasks = this.codingTasks.get(userId);
+    if (!tasks) return false;
+    const idx = tasks.findIndex(t => t.id === taskId);
+    if (idx === -1) return false;
+    tasks.splice(idx, 1);
+    return true;
   }
 
   // ---- Audit Log ----

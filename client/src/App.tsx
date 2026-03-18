@@ -22,6 +22,7 @@ import SecretsPage from "@/pages/secrets";
 import WebhooksPage from "@/pages/webhooks";
 import MarketplacePage from "@/pages/marketplace";
 import ContextPage from "@/pages/context";
+import ClaudeCodePage from "@/pages/claude-code";
 import AuditLogPage from "@/pages/audit-log";
 import AdminOverviewPage from "@/pages/admin/admin-overview";
 import AdminUsersPage from "@/pages/admin/admin-users";
@@ -54,6 +55,7 @@ function AppRouter() {
       <Route path="/webhooks" component={WebhooksPage} />
       <Route path="/marketplace" component={MarketplacePage} />
       <Route path="/context" component={ContextPage} />
+      <Route path="/claude-code" component={ClaudeCodePage} />
       <Route path="/audit-log" component={AuditLogPage} />
       <Route path="/admin/users">{() => <AdminRoute component={AdminUsersPage} />}</Route>
       <Route path="/admin/subscriptions">{() => <AdminRoute component={AdminSubscriptionsPage} />}</Route>
