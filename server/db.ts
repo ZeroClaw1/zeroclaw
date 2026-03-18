@@ -28,6 +28,15 @@ export async function ensureTables() {
       created_at TEXT NOT NULL
     );
 
+    -- Session table for connect-pg-simple
+    CREATE TABLE IF NOT EXISTS "session" (
+      "sid" varchar NOT NULL COLLATE "default",
+      "sess" json NOT NULL,
+      "expire" timestamp(6) NOT NULL,
+      CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+    );
+    CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+
     -- Drop and recreate password_reset_tokens if schema changed
     DROP TABLE IF EXISTS password_reset_tokens;
     CREATE TABLE IF NOT EXISTS password_reset_tokens (

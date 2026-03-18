@@ -197,6 +197,9 @@ export async function registerRoutes(
       pool: pool,
       tableName: "session",
       createTableIfMissing: true,
+      errorLog: (err: Error) => {
+        console.error("[session-store] PgStore error:", err.message, err.stack);
+      },
     });
     console.log("[session] Using PostgreSQL session store");
   } else {
@@ -265,8 +268,8 @@ export async function registerRoutes(
       // Explicitly save session to ensure it's persisted to the store before responding
       req.session.save((err) => {
         if (err) {
-          console.error("Session save error (register):", err);
-          return res.status(500).json({ error: "Session error" });
+          console.error("Session save error (register):", err?.message, err?.stack);
+          return res.status(500).json({ error: "Session error: " + (err?.message || "unknown") });
         }
         res.status(201).json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
       });
@@ -294,8 +297,8 @@ export async function registerRoutes(
       // Explicitly save session to ensure it's persisted to the store before responding
       req.session.save((err) => {
         if (err) {
-          console.error("Session save error (login):", err);
-          return res.status(500).json({ error: "Session error" });
+          console.error("Session save error (login):", err?.message, err?.stack);
+          return res.status(500).json({ error: "Session error: " + (err?.message || "unknown") });
         }
         res.json({ id: user.id, email: user.email, username: user.username, role: user.role, tier: user.tier, onboarding: user.onboarding });
       });
