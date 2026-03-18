@@ -27,6 +27,7 @@ import {
   insertAgentTaskSchema,
   registerSchema,
   loginSchema,
+  updateVaultConfigSchema,
   PRICING_TIERS,
 } from "@shared/schema";
 
@@ -1444,6 +1445,124 @@ export async function registerRoutes(
     const result = storage.uninstallSkill(userId, req.params.id, agentId);
     if (!result) return res.status(404).json({ error: "Skill or agent not found" });
     res.json({ ok: true });
+  });
+
+  // Dedicated Obsidian skill install (no agentId required)
+  app.post("/api/marketplace/skills/skill-013/install-obsidian", (req, res) => {
+    const userId = req.session.userId!;
+    const { vaultPath, syncMethod } = req.body;
+    if (!vaultPath || !syncMethod) return res.status(400).json({ error: "vaultPath and syncMethod required" });
+    const validMethods = ["obsidian-sync", "github", "local", "icloud"];
+    if (!validMethods.includes(syncMethod)) return res.status(400).json({ error: "Invalid syncMethod" });
+    try {
+      const config = storage.installObsidianSkill(userId, vaultPath, syncMethod);
+      res.json(config);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ========================================
+  // Context Management (Obsidian Vault)
+  // ========================================
+  app.get("/api/context/vault", (req, res) => {
+    const userId = req.session.userId!;
+    const config = storage.getVaultConfig(userId);
+    if (!config) return res.json(null);
+    res.json(config);
+  });
+
+  app.patch("/api/context/vault", (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = updateVaultConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+      const updated = storage.updateVaultConfig(userId, parsed.data);
+      res.json(updated);
+    } catch {
+      res.status(404).json({ error: "No vault config found" });
+    }
+  });
+
+  app.post("/api/context/vault/connect", (req, res) => {
+    const userId = req.session.userId!;
+    const { vaultPath, syncMethod } = req.body;
+    if (!vaultPath) return res.status(400).json({ error: "vaultPath required" });
+    try {
+      const config = storage.getVaultConfig(userId);
+      if (config) {
+        const updated = storage.updateVaultConfig(userId, { vaultPath, syncMethod, ...{ } });
+        // simulate connecting
+        (updated as any).connected = true;
+        (updated as any).lastSynced = new Date().toISOString();
+        res.json(updated);
+      } else {
+        res.status(404).json({ error: "Install the Obsidian Vault skill first" });
+      }
+    } catch {
+      res.status(500).json({ error: "Failed to connect" });
+    }
+  });
+
+  app.post("/api/context/vault/sync", (req, res) => {
+    const userId = req.session.userId!;
+    const config = storage.getVaultConfig(userId);
+    if (!config) return res.status(404).json({ error: "No vault config found" });
+    // Simulate sync by updating lastSynced
+    const updated = storage.updateVaultConfig(userId, {});
+    (updated as any).lastSynced = new Date().toISOString();
+    res.json(updated);
+  });
+
+  app.get("/api/context/notes", (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getVaultNotes(userId));
+  });
+
+  app.get("/api/context/notes/:id", (req, res) => {
+    const userId = req.session.userId!;
+    const note = storage.getVaultNote(userId, req.params.id);
+    if (!note) return res.status(404).json({ error: "Note not found" });
+    res.json(note);
+  });
+
+  app.get("/api/context/sessions", (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getContextSessions(userId));
+  });
+
+  app.get("/api/context/graph", (req, res) => {
+    const userId = req.session.userId!;
+    const notes = storage.getVaultNotes(userId);
+    // Build graph nodes and edges for ReactFlow
+    const nodes = notes.map((note, i) => ({
+      id: note.id,
+      type: "default",
+      position: {
+        x: 150 + (i % 5) * 220 + (Math.sin(i * 1.3) * 60),
+        y: 100 + Math.floor(i / 5) * 200 + (Math.cos(i * 0.9) * 40),
+      },
+      data: {
+        label: note.title,
+        trustState: note.trustState,
+        isStructureNote: note.isStructureNote,
+        tags: note.tags,
+        folder: note.folder,
+        wordCount: note.wordCount,
+      },
+    }));
+    const edges: Array<{ id: string; source: string; target: string; animated: boolean }> = [];
+    const edgeSet = new Set<string>();
+    for (const note of notes) {
+      for (const link of note.links) {
+        const edgeKey = [note.id, link].sort().join("-");
+        if (!edgeSet.has(edgeKey)) {
+          edgeSet.add(edgeKey);
+          edges.push({ id: `e-${edgeKey}`, source: note.id, target: link, animated: false });
+        }
+      }
+    }
+    res.json({ nodes, edges });
   });
 
   // ========================================

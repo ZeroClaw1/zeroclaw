@@ -20,6 +20,10 @@ import type {
   AuditLogEntry,
   User,
   SubscriptionTier,
+  ObsidianVaultConfig,
+  VaultNote,
+  ContextSession,
+  UpdateVaultConfig,
 } from "@shared/schema";
 
 // Internal type to attach userId to entities
@@ -129,6 +133,14 @@ export interface IStorage {
   installSkill(userId: string, id: string, agentId: string): boolean;
   uninstallSkill(userId: string, id: string, agentId: string): boolean;
 
+  // Obsidian Vault / Context Management
+  getVaultConfig(userId: string): ObsidianVaultConfig | null;
+  updateVaultConfig(userId: string, data: UpdateVaultConfig): ObsidianVaultConfig;
+  getVaultNotes(userId: string): VaultNote[];
+  getVaultNote(userId: string, noteId: string): VaultNote | undefined;
+  getContextSessions(userId: string): ContextSession[];
+  installObsidianSkill(userId: string, vaultPath: string, syncMethod: ObsidianVaultConfig["syncMethod"]): ObsidianVaultConfig;
+
   // Audit Log
   addAuditLog(userId: string, entry: Omit<AuditLogEntry, "id" | "timestamp">): AuditLogEntry;
   getAuditLog(userId: string, options?: { resource?: string; action?: string; limit?: number }): AuditLogEntry[];
@@ -203,6 +215,11 @@ export class MemStorage implements IStorage {
   private artifacts: Map<string, WithUserId<PipelineArtifact>> = new Map();
   private agentTasks: Map<string, WithUserId<AgentTask>> = new Map();
   private auditLogByUser: Map<string, AuditLogEntry[]> = new Map();
+
+  // Vault / Context data (per-user)
+  private vaultConfigs: Map<string, ObsidianVaultConfig> = new Map();
+  private vaultNotes: Map<string, VaultNote[]> = new Map();
+  private contextSessions: Map<string, ContextSession[]> = new Map();
 
   // Global data (no userId)
   private pipelineTemplates: PipelineTemplate[] = [];
@@ -282,6 +299,7 @@ export class MemStorage implements IStorage {
       { id: "skill-010", name: "Webhook Relay", description: "Route and transform webhooks", category: "utility", version: "1.3.0", author: "Community", downloads: 2800, rating: 4.1, icon: "webhook", installed: false },
       { id: "skill-011", name: "Test Runner", description: "Run test suites and report results", category: "utility", version: "2.2.0", author: "ZeroClaw", downloads: 8900, rating: 4.7, icon: "test-tube", installed: false },
       { id: "skill-012", name: "Deploy Notifier", description: "Notify team on deployment status", category: "utility", version: "1.0.5", author: "Community", downloads: 4100, rating: 4.3, icon: "bell", installed: false },
+      { id: "skill-013", name: "Obsidian Vault", description: "Connect your Obsidian vault for Zettelkasten-based context management. Search, retrieve, and feed notes to your agents.", category: "knowledge", version: "1.0.0", author: "ZeroClaw", downloads: 15600, rating: 4.9, icon: "brain", installed: false },
     ];
   }
 
@@ -1068,6 +1086,10 @@ export class MemStorage implements IStorage {
       agent.skills.push(skill.name);
       this.agents.set(agentId, agent);
     }
+    // If installing Obsidian Vault skill, also initialize vault config
+    if (id === "skill-013" && !this.vaultConfigs.has(userId)) {
+      this.initializeVaultData(userId, "/vault", "local");
+    }
     this.addAuditLog(userId, { action: "install", resource: "skill", resourceId: id, resourceName: skill.name, details: `Installed on agent ${agent.name}`, user: "user" });
     return true;
   }
@@ -1079,8 +1101,104 @@ export class MemStorage implements IStorage {
     skill.installed = false;
     agent.skills = agent.skills.filter(s => s !== skill.name);
     this.agents.set(agentId, agent);
+    // If uninstalling Obsidian Vault skill, clear vault data
+    if (id === "skill-013") {
+      this.vaultConfigs.delete(userId);
+      this.vaultNotes.delete(userId);
+      this.contextSessions.delete(userId);
+    }
     this.addAuditLog(userId, { action: "delete", resource: "skill", resourceId: id, resourceName: skill.name, details: `Uninstalled from agent ${agent.name}`, user: "user" });
     return true;
+  }
+
+  // ---- Obsidian Vault / Context ----
+  private initializeVaultData(userId: string, vaultPath: string, syncMethod: ObsidianVaultConfig["syncMethod"]) {
+    const notes = this.createDemoNotes();
+    const totalLinks = notes.reduce((sum, n) => sum + n.links.length, 0);
+
+    const config: ObsidianVaultConfig = {
+      id: `vault-${randomUUID().slice(0, 8)}`,
+      vaultPath,
+      syncMethod,
+      connected: true,
+      lastSynced: new Date().toISOString(),
+      totalNotes: notes.length,
+      totalLinks,
+      includeFolders: ["agents", "prompts", "knowledge"],
+      excludeFolders: [".obsidian", ".trash"],
+      tokenBudget: 32000,
+      retrievalStrategy: "zettelkasten",
+    };
+
+    this.vaultConfigs.set(userId, config);
+    this.vaultNotes.set(userId, notes);
+
+    // Create demo context sessions
+    this.contextSessions.set(userId, [
+      { id: "ctx-001", agentId: "agent-1", notesLoaded: 8, tokensUsed: 12400, tokenBudget: 32000, retrievalHits: 23, startedAt: new Date(Date.now() - 3600000).toISOString(), status: "active" },
+      { id: "ctx-002", agentId: "agent-2", notesLoaded: 3, tokensUsed: 4200, tokenBudget: 32000, retrievalHits: 7, startedAt: new Date(Date.now() - 7200000).toISOString(), status: "idle" },
+      { id: "ctx-003", agentId: "agent-3", notesLoaded: 12, tokensUsed: 28900, tokenBudget: 32000, retrievalHits: 45, startedAt: new Date(Date.now() - 86400000).toISOString(), status: "expired" },
+    ]);
+  }
+
+  private createDemoNotes(): VaultNote[] {
+    const now = Date.now();
+    const day = 86400000;
+    return [
+      { id: "note-001", title: "Agent Architecture Patterns", path: "agents/Agent Architecture Patterns.md", folder: "agents", tags: ["architecture", "moc", "agents"], links: ["note-002", "note-003", "note-004", "note-006", "note-009"], backlinks: ["note-005", "note-010"], wordCount: 1240, lastModified: new Date(now - day * 2).toISOString(), isStructureNote: true, trustState: "canonical" },
+      { id: "note-002", title: "ReAct Pattern", path: "agents/ReAct Pattern.md", folder: "agents", tags: ["react", "reasoning", "agents"], links: ["note-001", "note-003", "note-007"], backlinks: ["note-001", "note-006"], wordCount: 680, lastModified: new Date(now - day * 5).toISOString(), isStructureNote: false, trustState: "canonical" },
+      { id: "note-003", title: "Chain of Thought Prompting", path: "prompts/Chain of Thought Prompting.md", folder: "prompts", tags: ["cot", "prompting", "reasoning"], links: ["note-007", "note-008"], backlinks: ["note-001", "note-002", "note-007"], wordCount: 520, lastModified: new Date(now - day * 3).toISOString(), isStructureNote: false, trustState: "working" },
+      { id: "note-004", title: "Context Window Management", path: "agents/Context Window Management.md", folder: "agents", tags: ["context", "tokens", "optimization"], links: ["note-008", "note-011"], backlinks: ["note-001", "note-008"], wordCount: 890, lastModified: new Date(now - day).toISOString(), isStructureNote: false, trustState: "canonical" },
+      { id: "note-005", title: "RAG vs Fine-Tuning", path: "knowledge/RAG vs Fine-Tuning.md", folder: "knowledge", tags: ["rag", "fine-tuning", "comparison"], links: ["note-012", "note-013", "note-001"], backlinks: ["note-010", "note-012"], wordCount: 1100, lastModified: new Date(now - day * 7).toISOString(), isStructureNote: false, trustState: "working" },
+      { id: "note-006", title: "Tool Use in AI Agents", path: "agents/Tool Use in AI Agents.md", folder: "agents", tags: ["tools", "function-calling", "agents", "moc"], links: ["note-001", "note-002", "note-009", "note-015"], backlinks: ["note-001", "note-009"], wordCount: 1450, lastModified: new Date(now - day * 4).toISOString(), isStructureNote: true, trustState: "canonical" },
+      { id: "note-007", title: "Prompt Engineering Fundamentals", path: "prompts/Prompt Engineering Fundamentals.md", folder: "prompts", tags: ["prompting", "fundamentals", "moc"], links: ["note-003", "note-002", "note-008", "note-014"], backlinks: ["note-002", "note-003"], wordCount: 1680, lastModified: new Date(now - day * 6).toISOString(), isStructureNote: true, trustState: "canonical" },
+      { id: "note-008", title: "Token Optimization Strategies", path: "agents/Token Optimization Strategies.md", folder: "agents", tags: ["tokens", "optimization", "cost"], links: ["note-004", "note-003"], backlinks: ["note-003", "note-004", "note-007"], wordCount: 740, lastModified: new Date(now - day * 8).toISOString(), isStructureNote: false, trustState: "stale" },
+      { id: "note-009", title: "Multi-Agent Orchestration", path: "agents/Multi-Agent Orchestration.md", folder: "agents", tags: ["multi-agent", "orchestration", "coordination"], links: ["note-001", "note-006", "note-015"], backlinks: ["note-001", "note-006"], wordCount: 960, lastModified: new Date(now - day * 3).toISOString(), isStructureNote: false, trustState: "working" },
+      { id: "note-010", title: "Knowledge Graphs for Agents", path: "knowledge/Knowledge Graphs for Agents.md", folder: "knowledge", tags: ["knowledge-graph", "rag", "agents"], links: ["note-001", "note-005", "note-012"], backlinks: ["note-012", "note-013"], wordCount: 830, lastModified: new Date(now - day * 10).toISOString(), isStructureNote: false, trustState: "contested" },
+      { id: "note-011", title: "Obsidian as Agent Memory", path: "knowledge/Obsidian as Agent Memory.md", folder: "knowledge", tags: ["obsidian", "memory", "zettelkasten"], links: ["note-004", "note-012"], backlinks: ["note-004"], wordCount: 590, lastModified: new Date(now - day * 2).toISOString(), isStructureNote: false, trustState: "working" },
+      { id: "note-012", title: "Vector Embeddings Explained", path: "knowledge/Vector Embeddings Explained.md", folder: "knowledge", tags: ["embeddings", "vectors", "ml"], links: ["note-013", "note-005", "note-010"], backlinks: ["note-005", "note-010", "note-011", "note-013"], wordCount: 1020, lastModified: new Date(now - day * 12).toISOString(), isStructureNote: false, trustState: "canonical" },
+      { id: "note-013", title: "Semantic Search Techniques", path: "knowledge/Semantic Search Techniques.md", folder: "knowledge", tags: ["search", "semantic", "retrieval"], links: ["note-012", "note-010"], backlinks: ["note-005", "note-012"], wordCount: 770, lastModified: new Date(now - day * 9).toISOString(), isStructureNote: false, trustState: "working" },
+      { id: "note-014", title: "Agent Evaluation Metrics", path: "agents/Agent Evaluation Metrics.md", folder: "agents", tags: ["evaluation", "metrics", "testing"], links: ["note-015"], backlinks: ["note-007"], wordCount: 650, lastModified: new Date(now - day * 14).toISOString(), isStructureNote: false, trustState: "stale" },
+      { id: "note-015", title: "Human-in-the-Loop Patterns", path: "agents/Human-in-the-Loop Patterns.md", folder: "agents", tags: ["hitl", "safety", "alignment"], links: ["note-006", "note-009"], backlinks: ["note-006", "note-009", "note-014"], wordCount: 870, lastModified: new Date(now - day * 5).toISOString(), isStructureNote: false, trustState: "canonical" },
+    ];
+  }
+
+  getVaultConfig(userId: string): ObsidianVaultConfig | null {
+    return this.vaultConfigs.get(userId) ?? null;
+  }
+
+  updateVaultConfig(userId: string, data: UpdateVaultConfig): ObsidianVaultConfig {
+    const existing = this.vaultConfigs.get(userId);
+    if (!existing) throw new Error("No vault config found");
+    const updated = { ...existing, ...data };
+    this.vaultConfigs.set(userId, updated);
+    return updated;
+  }
+
+  getVaultNotes(userId: string): VaultNote[] {
+    return this.vaultNotes.get(userId) ?? [];
+  }
+
+  getVaultNote(userId: string, noteId: string): VaultNote | undefined {
+    const notes = this.vaultNotes.get(userId);
+    return notes?.find(n => n.id === noteId);
+  }
+
+  getContextSessions(userId: string): ContextSession[] {
+    return this.contextSessions.get(userId) ?? [];
+  }
+
+  installObsidianSkill(userId: string, vaultPath: string, syncMethod: ObsidianVaultConfig["syncMethod"]): ObsidianVaultConfig {
+    // Mark skill as installed
+    const skill = this.skillMarketplace.find(s => s.id === "skill-013");
+    if (skill) {
+      skill.installed = true;
+      skill.downloads += 1;
+    }
+    // Initialize vault data
+    this.initializeVaultData(userId, vaultPath, syncMethod);
+    this.addAuditLog(userId, { action: "install", resource: "skill", resourceId: "skill-013", resourceName: "Obsidian Vault", details: `Connected vault at ${vaultPath}`, user: "user" });
+    return this.vaultConfigs.get(userId)!;
   }
 
   // ---- Audit Log ----

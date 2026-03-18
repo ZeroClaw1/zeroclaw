@@ -18,6 +18,7 @@ import {
   LogOut,
   User,
   Shield,
+  Brain,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,7 @@ const navItems = [
   { label: "Deployments", icon: Rocket, href: "/deployments" },
   { label: "Planning", icon: ClipboardList, href: "/planning" },
   { label: "OpenClaw", icon: Terminal, href: "/openclaw" },
+  { label: "Context", icon: Brain, href: "/context" },
   { label: "Logs", icon: Terminal, href: "/logs" },
   { label: "GitHub", icon: Github, href: "/github" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
@@ -55,6 +57,22 @@ function OpenClawLogo() {
       src={openclawLogoSm}
       alt="ZeroClaw"
       className="h-7 w-auto object-contain"
+    />
+  );
+}
+
+function VaultStatusDot() {
+  const { data } = useQuery<{ connected: boolean } | null>({
+    queryKey: ["/api/context/vault"],
+    refetchInterval: 10000,
+  });
+
+  if (!data?.connected) return null;
+
+  return (
+    <div
+      className="h-1.5 w-1.5 rounded-full bg-cyan-400 ml-auto"
+      data-testid="vault-status-dot"
     />
   );
 }
@@ -132,6 +150,7 @@ export function AppSidebar() {
                       {item.label === "OpenClaw" && (
                         <Zap className="h-3 w-3 ml-auto text-primary pulse-live" />
                       )}
+                      {item.label === "Context" && <VaultStatusDot />}
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

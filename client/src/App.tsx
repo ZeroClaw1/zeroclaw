@@ -21,6 +21,7 @@ import GitHubPage from "@/pages/github";
 import SecretsPage from "@/pages/secrets";
 import WebhooksPage from "@/pages/webhooks";
 import MarketplacePage from "@/pages/marketplace";
+import ContextPage from "@/pages/context";
 import AuditLogPage from "@/pages/audit-log";
 import AdminOverviewPage from "@/pages/admin/admin-overview";
 import AdminUsersPage from "@/pages/admin/admin-users";
@@ -52,6 +53,7 @@ function AppRouter() {
       <Route path="/secrets" component={SecretsPage} />
       <Route path="/webhooks" component={WebhooksPage} />
       <Route path="/marketplace" component={MarketplacePage} />
+      <Route path="/context" component={ContextPage} />
       <Route path="/audit-log" component={AuditLogPage} />
       <Route path="/admin/users">{() => <AdminRoute component={AdminUsersPage} />}</Route>
       <Route path="/admin/subscriptions">{() => <AdminRoute component={AdminSubscriptionsPage} />}</Route>

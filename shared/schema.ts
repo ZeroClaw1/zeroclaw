@@ -325,7 +325,7 @@ export interface SkillMarketplaceItem {
   id: string;
   name: string;
   description: string;
-  category: "integration" | "devops" | "security" | "monitoring" | "utility";
+  category: "integration" | "devops" | "security" | "monitoring" | "utility" | "knowledge";
   version: string;
   author: string;
   downloads: number;
@@ -643,3 +643,53 @@ export interface AuditLogEntry {
   timestamp: string;
   metadata?: Record<string, unknown>;
 }
+
+// ---- Obsidian Vault / Context Management ----
+export interface ObsidianVaultConfig {
+  id: string;
+  vaultPath: string;
+  syncMethod: "obsidian-sync" | "github" | "local" | "icloud";
+  connected: boolean;
+  lastSynced: string | null;
+  totalNotes: number;
+  totalLinks: number;
+  includeFolders: string[];
+  excludeFolders: string[];
+  tokenBudget: number;
+  retrievalStrategy: "zettelkasten" | "recent" | "relevant" | "manual";
+}
+
+export interface VaultNote {
+  id: string;
+  title: string;
+  path: string;
+  folder: string;
+  tags: string[];
+  links: string[];
+  backlinks: string[];
+  wordCount: number;
+  lastModified: string;
+  isStructureNote: boolean;
+  trustState: "canonical" | "working" | "stale" | "contested";
+}
+
+export interface ContextSession {
+  id: string;
+  agentId: string;
+  notesLoaded: number;
+  tokensUsed: number;
+  tokenBudget: number;
+  retrievalHits: number;
+  startedAt: string;
+  status: "active" | "idle" | "expired";
+}
+
+export const updateVaultConfigSchema = z.object({
+  vaultPath: z.string().optional(),
+  syncMethod: z.enum(["obsidian-sync", "github", "local", "icloud"]).optional(),
+  includeFolders: z.array(z.string()).optional(),
+  excludeFolders: z.array(z.string()).optional(),
+  tokenBudget: z.number().min(1000).max(200000).optional(),
+  retrievalStrategy: z.enum(["zettelkasten", "recent", "relevant", "manual"]).optional(),
+});
+export type UpdateVaultConfig = z.infer<typeof updateVaultConfigSchema>;

@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useLocation } from "wouter";
 import type { SkillMarketplaceItem, Agent } from "@shared/schema";
 import {
   Search,
@@ -40,6 +41,9 @@ import {
   Bell,
   Package,
   Trash2,
+  Brain,
+  ArrowRight,
+  Plug,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -49,6 +53,7 @@ const categoryColors: Record<string, string> = {
   security: "bg-red-500/15 text-red-400 border-red-500/30",
   monitoring: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
   utility: "bg-purple-500/15 text-purple-400 border-purple-500/30",
+  knowledge: "bg-cyan-500/15 text-cyan-400 border-cyan-500/30",
 };
 
 const skillIconMap: Record<string, React.ElementType> = {
@@ -64,16 +69,21 @@ const skillIconMap: Record<string, React.ElementType> = {
   "Webhook Relay": Webhook,
   "Test Runner": TestTube,
   "Deploy Notifier": Bell,
+  "Obsidian Vault": Brain,
 };
 
-const categories = ["all", "integration", "devops", "security", "monitoring", "utility"] as const;
+const categories = ["all", "integration", "devops", "security", "monitoring", "utility", "knowledge"] as const;
 
 export default function MarketplacePage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [installTarget, setInstallTarget] = useState<SkillMarketplaceItem | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState("");
+  const [obsidianDialogOpen, setObsidianDialogOpen] = useState(false);
+  const [obsidianVaultPath, setObsidianVaultPath] = useState("");
+  const [obsidianSyncMethod, setObsidianSyncMethod] = useState("local");
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
 
   const { data: skills, isLoading } = useQuery<SkillMarketplaceItem[]>({
     queryKey: ["/api/marketplace/skills"],
@@ -109,6 +119,37 @@ export default function MarketplacePage() {
       queryClient.invalidateQueries({ queryKey: ["/api/marketplace/skills"] });
       queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
       toast({ title: "Skill uninstalled" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const obsidianInstallMutation = useMutation({
+    mutationFn: async ({ vaultPath, syncMethod }: { vaultPath: string; syncMethod: string }) => {
+      const res = await apiRequest("POST", "/api/marketplace/skills/skill-013/install-obsidian", { vaultPath, syncMethod });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/marketplace/skills"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/context/vault"] });
+      setObsidianDialogOpen(false);
+      setObsidianVaultPath("");
+      toast({
+        title: "Obsidian Vault installed",
+        description: "Go to Context to manage your vault",
+        action: (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 text-[10px]"
+            onClick={() => setLocation("/context")}
+            data-testid="toast-goto-context"
+          >
+            Go to Context
+          </Button>
+        ),
+      });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -205,30 +246,62 @@ export default function MarketplacePage() {
                   </div>
 
                   {skill.installed ? (
-                    <div className="flex gap-2">
-                      <Badge className="flex-1 justify-center text-[9px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/15">
-                        <CheckCircle2 className="h-3 w-3 mr-1" />
-                        Installed
-                      </Badge>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400"
-                        onClick={() => {
-                          const agent = agents?.[0];
-                          if (agent) uninstallMutation.mutate({ skillId: skill.id, agentId: agent.id });
-                        }}
-                        data-testid={`button-uninstall-${skill.id}`}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
+                    skill.id === "skill-013" ? (
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 text-[10px] h-7 border-cyan-500/40 text-cyan-400 hover:bg-cyan-500/10"
+                          onClick={() => setLocation("/context")}
+                          data-testid={`button-manage-${skill.id}`}
+                        >
+                          Manage <ArrowRight className="h-3 w-3 ml-1" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400"
+                          onClick={() => {
+                            const agent = agents?.[0];
+                            if (agent) uninstallMutation.mutate({ skillId: skill.id, agentId: agent.id });
+                          }}
+                          data-testid={`button-uninstall-${skill.id}`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <Badge className="flex-1 justify-center text-[9px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/15">
+                          <CheckCircle2 className="h-3 w-3 mr-1" />
+                          Installed
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400"
+                          onClick={() => {
+                            const agent = agents?.[0];
+                            if (agent) uninstallMutation.mutate({ skillId: skill.id, agentId: agent.id });
+                          }}
+                          data-testid={`button-uninstall-${skill.id}`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )
                   ) : (
                     <Button
                       variant="outline"
                       size="sm"
                       className="w-full text-[10px] h-7 border-primary/40 text-primary hover:bg-primary/10"
-                      onClick={() => setInstallTarget(skill)}
+                      onClick={() => {
+                        if (skill.id === "skill-013") {
+                          setObsidianDialogOpen(true);
+                        } else {
+                          setInstallTarget(skill);
+                        }
+                      }}
                       data-testid={`button-install-${skill.id}`}
                     >
                       <Download className="h-3 w-3 mr-1.5" />
@@ -289,6 +362,64 @@ export default function MarketplacePage() {
                 <Download className="h-3.5 w-3.5 mr-1.5" />
               )}
               Install Skill
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Obsidian Vault Custom Install Dialog */}
+      <Dialog open={obsidianDialogOpen} onOpenChange={(v) => { if (!v) { setObsidianDialogOpen(false); setObsidianVaultPath(""); } }}>
+        <DialogContent className="max-w-sm bg-card border-border/50">
+          <DialogHeader>
+            <DialogTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Brain className="h-4 w-4 text-cyan-400" />
+              Connect Obsidian Vault
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <p className="text-[10px] text-muted-foreground">
+              Connect your Obsidian vault for Zettelkasten-based context management.
+            </p>
+            <div>
+              <label className="text-[10px] text-muted-foreground mb-1 block">Vault Path</label>
+              <Input
+                placeholder="/path/to/your/vault"
+                value={obsidianVaultPath}
+                onChange={(e) => setObsidianVaultPath(e.target.value)}
+                className="h-8 text-xs bg-muted/20 border-border/40"
+                data-testid="input-obsidian-vault-path"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-muted-foreground mb-1 block">Sync Method</label>
+              <Select value={obsidianSyncMethod} onValueChange={setObsidianSyncMethod}>
+                <SelectTrigger className="h-8 text-xs bg-muted/20 border-border/40" data-testid="select-obsidian-sync-method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local">Local</SelectItem>
+                  <SelectItem value="obsidian-sync">Obsidian Sync</SelectItem>
+                  <SelectItem value="github">GitHub</SelectItem>
+                  <SelectItem value="icloud">iCloud</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              className="w-full text-xs bg-cyan-600 hover:bg-cyan-700 text-white"
+              onClick={() => {
+                if (obsidianVaultPath) {
+                  obsidianInstallMutation.mutate({ vaultPath: obsidianVaultPath, syncMethod: obsidianSyncMethod });
+                }
+              }}
+              disabled={!obsidianVaultPath || obsidianInstallMutation.isPending}
+              data-testid="button-obsidian-connect-install"
+            >
+              {obsidianInstallMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <Plug className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Connect & Install
             </Button>
           </div>
         </DialogContent>
