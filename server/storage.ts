@@ -140,6 +140,7 @@ export interface IStorage {
   getVaultNote(userId: string, noteId: string): VaultNote | undefined;
   getContextSessions(userId: string): ContextSession[];
   installObsidianSkill(userId: string, vaultPath: string, syncMethod: ObsidianVaultConfig["syncMethod"]): ObsidianVaultConfig;
+  uninstallObsidianSkill(userId: string): boolean;
 
   // Audit Log
   addAuditLog(userId: string, entry: Omit<AuditLogEntry, "id" | "timestamp">): AuditLogEntry;
@@ -287,18 +288,6 @@ export class MemStorage implements IStorage {
 
     // Skill marketplace (global)
     this.skillMarketplace = [
-      { id: "skill-001", name: "GitHub Integration", description: "Connect to GitHub repos, PRs, issues", category: "integration", version: "2.1.0", author: "ZeroClaw", downloads: 12400, rating: 4.8, icon: "github", installed: false },
-      { id: "skill-002", name: "Slack Notifier", description: "Send notifications to Slack channels", category: "integration", version: "1.5.3", author: "ZeroClaw", downloads: 9800, rating: 4.6, icon: "message-square", installed: false },
-      { id: "skill-003", name: "Docker Manager", description: "Build, push, manage Docker containers", category: "devops", version: "3.0.1", author: "ZeroClaw", downloads: 8200, rating: 4.7, icon: "container", installed: false },
-      { id: "skill-004", name: "Database Migrator", description: "Run and manage database migrations", category: "devops", version: "1.2.0", author: "Community", downloads: 4500, rating: 4.3, icon: "database", installed: false },
-      { id: "skill-005", name: "Security Scanner", description: "Scan code for vulnerabilities", category: "security", version: "2.4.0", author: "ZeroClaw", downloads: 11200, rating: 4.9, icon: "shield", installed: false },
-      { id: "skill-006", name: "Log Aggregator", description: "Collect and analyze logs", category: "monitoring", version: "1.8.2", author: "Community", downloads: 6700, rating: 4.4, icon: "scroll-text", installed: false },
-      { id: "skill-007", name: "Performance Monitor", description: "Track app performance metrics", category: "monitoring", version: "2.0.0", author: "ZeroClaw", downloads: 7300, rating: 4.5, icon: "activity", installed: false },
-      { id: "skill-008", name: "Terraform Provider", description: "Manage infrastructure as code", category: "devops", version: "1.6.1", author: "Community", downloads: 5400, rating: 4.2, icon: "cloud", installed: false },
-      { id: "skill-009", name: "Secrets Rotator", description: "Automatically rotate secrets", category: "security", version: "1.1.0", author: "ZeroClaw", downloads: 3200, rating: 4.6, icon: "key-round", installed: false },
-      { id: "skill-010", name: "Webhook Relay", description: "Route and transform webhooks", category: "utility", version: "1.3.0", author: "Community", downloads: 2800, rating: 4.1, icon: "webhook", installed: false },
-      { id: "skill-011", name: "Test Runner", description: "Run test suites and report results", category: "utility", version: "2.2.0", author: "ZeroClaw", downloads: 8900, rating: 4.7, icon: "test-tube", installed: false },
-      { id: "skill-012", name: "Deploy Notifier", description: "Notify team on deployment status", category: "utility", version: "1.0.5", author: "Community", downloads: 4100, rating: 4.3, icon: "bell", installed: false },
       { id: "skill-013", name: "Obsidian Vault", description: "Connect your Obsidian vault for Zettelkasten-based context management. Search, retrieve, and feed notes to your agents.", category: "knowledge", version: "1.0.0", author: "ZeroClaw", downloads: 15600, rating: 4.9, icon: "brain", installed: false },
     ];
   }
@@ -1108,6 +1097,17 @@ export class MemStorage implements IStorage {
       this.contextSessions.delete(userId);
     }
     this.addAuditLog(userId, { action: "delete", resource: "skill", resourceId: id, resourceName: skill.name, details: `Uninstalled from agent ${agent.name}`, user: "user" });
+    return true;
+  }
+
+  uninstallObsidianSkill(userId: string): boolean {
+    const skill = this.skillMarketplace.find(s => s.id === "skill-013");
+    if (!skill || !skill.installed) return false;
+    skill.installed = false;
+    this.vaultConfigs.delete(userId);
+    this.vaultNotes.delete(userId);
+    this.contextSessions.delete(userId);
+    this.addAuditLog(userId, { action: "delete", resource: "skill", resourceId: "skill-013", resourceName: skill.name, details: "Uninstalled Obsidian Vault skill", user: "user" });
     return true;
   }
 

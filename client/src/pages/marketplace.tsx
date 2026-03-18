@@ -20,25 +20,13 @@ import {
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useLocation } from "wouter";
-import type { SkillMarketplaceItem, Agent } from "@shared/schema";
+import type { SkillMarketplaceItem } from "@shared/schema";
 import {
   Search,
   Star,
   Download,
   CheckCircle2,
   Loader2,
-  Github,
-  MessageSquare,
-  Container,
-  Database,
-  Shield,
-  ScrollText,
-  Activity,
-  Globe,
-  Key,
-  Webhook,
-  TestTube,
-  Bell,
   Package,
   Trash2,
   Brain,
@@ -48,37 +36,18 @@ import {
 import { useToast } from "@/hooks/use-toast";
 
 const categoryColors: Record<string, string> = {
-  integration: "bg-blue-500/15 text-blue-400 border-blue-500/30",
-  devops: "bg-amber-500/15 text-amber-400 border-amber-500/30",
-  security: "bg-red-500/15 text-red-400 border-red-500/30",
-  monitoring: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
-  utility: "bg-purple-500/15 text-purple-400 border-purple-500/30",
   knowledge: "bg-cyan-500/15 text-cyan-400 border-cyan-500/30",
 };
 
 const skillIconMap: Record<string, React.ElementType> = {
-  "GitHub Integration": Github,
-  "Slack Notifier": MessageSquare,
-  "Docker Manager": Container,
-  "Database Migrator": Database,
-  "Security Scanner": Shield,
-  "Log Aggregator": ScrollText,
-  "Performance Monitor": Activity,
-  "Terraform Provider": Globe,
-  "Secrets Rotator": Key,
-  "Webhook Relay": Webhook,
-  "Test Runner": TestTube,
-  "Deploy Notifier": Bell,
   "Obsidian Vault": Brain,
 };
 
-const categories = ["all", "integration", "devops", "security", "monitoring", "utility", "knowledge"] as const;
+const categories = ["all", "knowledge"] as const;
 
 export default function MarketplacePage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
-  const [installTarget, setInstallTarget] = useState<SkillMarketplaceItem | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState("");
   const [obsidianDialogOpen, setObsidianDialogOpen] = useState(false);
   const [obsidianVaultPath, setObsidianVaultPath] = useState("");
   const [obsidianSyncMethod, setObsidianSyncMethod] = useState("local");
@@ -89,36 +58,17 @@ export default function MarketplacePage() {
     queryKey: ["/api/marketplace/skills"],
   });
 
-  const { data: agents } = useQuery<Agent[]>({
-    queryKey: ["/api/agents"],
-  });
 
-  const installMutation = useMutation({
-    mutationFn: async ({ skillId, agentId }: { skillId: string; agentId: string }) => {
-      const res = await apiRequest("POST", `/api/marketplace/skills/${skillId}/install`, { agentId });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/marketplace/skills"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
-      setInstallTarget(null);
-      setSelectedAgentId("");
-      toast({ title: "Skill installed", description: "Skill has been installed on the agent" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
 
   const uninstallMutation = useMutation({
-    mutationFn: async ({ skillId, agentId }: { skillId: string; agentId: string }) => {
-      const res = await apiRequest("POST", `/api/marketplace/skills/${skillId}/uninstall`, { agentId });
+    mutationFn: async (skillId: string) => {
+      const res = await apiRequest("POST", `/api/marketplace/skills/${skillId}/uninstall-obsidian`);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/marketplace/skills"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
-      toast({ title: "Skill uninstalled" });
+      queryClient.invalidateQueries({ queryKey: ["/api/context/vault"] });
+      toast({ title: "Skill uninstalled", description: "Obsidian Vault has been disconnected" });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -261,13 +211,11 @@ export default function MarketplacePage() {
                           variant="ghost"
                           size="sm"
                           className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400"
-                          onClick={() => {
-                            const agent = agents?.[0];
-                            if (agent) uninstallMutation.mutate({ skillId: skill.id, agentId: agent.id });
-                          }}
+                          onClick={() => uninstallMutation.mutate(skill.id)}
+                          disabled={uninstallMutation.isPending}
                           data-testid={`button-uninstall-${skill.id}`}
                         >
-                          <Trash2 className="h-3 w-3" />
+                          {uninstallMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                         </Button>
                       </div>
                     ) : (
@@ -280,13 +228,11 @@ export default function MarketplacePage() {
                           variant="ghost"
                           size="sm"
                           className="h-6 w-6 p-0 text-muted-foreground hover:text-red-400"
-                          onClick={() => {
-                            const agent = agents?.[0];
-                            if (agent) uninstallMutation.mutate({ skillId: skill.id, agentId: agent.id });
-                          }}
+                          onClick={() => uninstallMutation.mutate(skill.id)}
+                          disabled={uninstallMutation.isPending}
                           data-testid={`button-uninstall-${skill.id}`}
                         >
-                          <Trash2 className="h-3 w-3" />
+                          {uninstallMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                         </Button>
                       </div>
                     )
@@ -298,8 +244,6 @@ export default function MarketplacePage() {
                       onClick={() => {
                         if (skill.id === "skill-013") {
                           setObsidianDialogOpen(true);
-                        } else {
-                          setInstallTarget(skill);
                         }
                       }}
                       data-testid={`button-install-${skill.id}`}
@@ -321,51 +265,6 @@ export default function MarketplacePage() {
           <p className="text-xs text-muted-foreground">No skills found matching your criteria.</p>
         </div>
       )}
-
-      {/* Install Dialog with Agent Selector */}
-      <Dialog open={!!installTarget} onOpenChange={(v) => { if (!v) { setInstallTarget(null); setSelectedAgentId(""); } }}>
-        <DialogContent className="max-w-sm bg-card border-border/50">
-          <DialogHeader>
-            <DialogTitle className="text-sm font-semibold text-foreground">
-              Install {installTarget?.name}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 mt-2">
-            <p className="text-[10px] text-muted-foreground">
-              Select an agent to install this skill on:
-            </p>
-            <Select value={selectedAgentId} onValueChange={setSelectedAgentId}>
-              <SelectTrigger className="h-8 text-xs bg-muted/20 border-border/40" data-testid="select-install-agent">
-                <SelectValue placeholder="Select agent" />
-              </SelectTrigger>
-              <SelectContent>
-                {agents?.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.name} ({a.status})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              className="w-full text-xs bg-primary hover:bg-primary/90 text-primary-foreground"
-              onClick={() => {
-                if (installTarget && selectedAgentId) {
-                  installMutation.mutate({ skillId: installTarget.id, agentId: selectedAgentId });
-                }
-              }}
-              disabled={!selectedAgentId || installMutation.isPending}
-              data-testid="button-confirm-install"
-            >
-              {installMutation.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-              ) : (
-                <Download className="h-3.5 w-3.5 mr-1.5" />
-              )}
-              Install Skill
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Obsidian Vault Custom Install Dialog */}
       <Dialog open={obsidianDialogOpen} onOpenChange={(v) => { if (!v) { setObsidianDialogOpen(false); setObsidianVaultPath(""); } }}>

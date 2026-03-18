@@ -1447,6 +1447,14 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
+  // Dedicated Obsidian skill uninstall (no agentId required)
+  app.post("/api/marketplace/skills/skill-013/uninstall-obsidian", (req, res) => {
+    const userId = req.session.userId!;
+    const result = storage.uninstallObsidianSkill(userId);
+    if (!result) return res.status(404).json({ error: "Skill not installed" });
+    res.json({ ok: true });
+  });
+
   // Dedicated Obsidian skill install (no agentId required)
   app.post("/api/marketplace/skills/skill-013/install-obsidian", (req, res) => {
     const userId = req.session.userId!;
