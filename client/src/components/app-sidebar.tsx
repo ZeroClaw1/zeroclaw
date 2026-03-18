@@ -1,4 +1,5 @@
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard,
   GitBranch,
@@ -55,6 +56,28 @@ function OpenClawLogo() {
       alt="ZeroClaw"
       className="h-7 w-auto object-contain"
     />
+  );
+}
+
+function GatewayStatusIndicator() {
+  const { data } = useQuery<{ connected: boolean }>({
+    queryKey: ["/api/openclaw/status"],
+    refetchInterval: 10000,
+  });
+
+  const connected = data?.connected ?? false;
+
+  return (
+    <div className="flex items-center gap-2 text-[10px] text-muted-foreground" data-testid="gateway-status">
+      <div
+        className={`h-2 w-2 rounded-full ${
+          connected
+            ? "bg-green-500 glow-success pulse-live"
+            : "bg-red-500/70"
+        }`}
+      />
+      <span>{connected ? "Gateway Connected" : "Gateway Disconnected"}</span>
+    </div>
   );
 }
 
@@ -184,10 +207,7 @@ export function AppSidebar() {
             </Button>
           </div>
         )}
-        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-          <div className="h-2 w-2 rounded-full bg-green-500 glow-success pulse-live" />
-          <span>Gateway Connected</span>
-        </div>
+        <GatewayStatusIndicator />
       </SidebarFooter>
     </Sidebar>
   );
