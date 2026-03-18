@@ -8,6 +8,11 @@ import { storage } from "./storage";
 const app = express();
 const httpServer = createServer(app);
 
+// Trust Railway's reverse proxy so secure cookies and req.protocol work correctly
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;

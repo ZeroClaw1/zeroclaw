@@ -205,6 +205,8 @@ export async function registerRoutes(
     console.log("[session] Using in-memory session store");
   }
 
+  const isProduction = process.env.NODE_ENV === "production";
+
   app.use(session({
     secret: process.env.SESSION_SECRET || randomBytes(32).toString("hex"),
     resave: false,
@@ -214,6 +216,7 @@ export async function registerRoutes(
       maxAge: 7 * 24 * 60 * 60 * 1000,
       httpOnly: true,
       sameSite: "lax",
+      secure: isProduction,
     },
   }));
 
