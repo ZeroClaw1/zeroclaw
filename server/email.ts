@@ -78,142 +78,105 @@ export async function sendPasswordResetEmail(
 ): Promise<void> {
   const subject = "Reset your ZeroClaw password";
 
+  // Table-based layout with fully inline styles for email client compatibility.
+  // Gmail strips <style> blocks, <body> bgcolor, flexbox, and gradients.
   const html = `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <title>Reset your ZeroClaw password</title>
-  <style>
-    body {
-      margin: 0;
-      padding: 0;
-      background-color: #0a0e1a;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      color: #e2e8f0;
-    }
-    .wrapper {
-      max-width: 520px;
-      margin: 0 auto;
-      padding: 40px 24px;
-    }
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 32px;
-    }
-    .logo-mark {
-      width: 36px;
-      height: 36px;
-      background: linear-gradient(135deg, #14b8a6, #0891b2);
-      border-radius: 8px;
-      display: inline-block;
-    }
-    .logo-text {
-      font-size: 20px;
-      font-weight: 700;
-      color: #f1f5f9;
-      letter-spacing: -0.02em;
-    }
-    .card {
-      background: #111827;
-      border: 1px solid #1e293b;
-      border-radius: 12px;
-      padding: 32px;
-    }
-    h1 {
-      font-size: 22px;
-      font-weight: 700;
-      color: #f1f5f9;
-      margin: 0 0 12px 0;
-      letter-spacing: -0.01em;
-    }
-    p {
-      font-size: 15px;
-      line-height: 1.6;
-      color: #94a3b8;
-      margin: 0 0 24px 0;
-    }
-    .btn {
-      display: inline-block;
-      background: linear-gradient(135deg, #14b8a6, #0891b2);
-      color: #ffffff !important;
-      text-decoration: none;
-      font-size: 15px;
-      font-weight: 600;
-      padding: 13px 28px;
-      border-radius: 8px;
-      letter-spacing: 0.01em;
-    }
-    .btn:hover {
-      opacity: 0.9;
-    }
-    .divider {
-      border: none;
-      border-top: 1px solid #1e293b;
-      margin: 28px 0;
-    }
-    .url-fallback {
-      font-size: 13px;
-      color: #64748b;
-      word-break: break-all;
-    }
-    .url-fallback a {
-      color: #14b8a6;
-    }
-    .expiry {
-      font-size: 13px;
-      color: #64748b;
-      margin: 20px 0 0 0;
-    }
-    .footer {
-      margin-top: 32px;
-      font-size: 12px;
-      color: #475569;
-      text-align: center;
-      line-height: 1.6;
-    }
-    .footer a {
-      color: #14b8a6;
-      text-decoration: none;
-    }
-  </style>
+  <!--[if mso]>
+  <style>table,td{font-family:Arial,Helvetica,sans-serif!important}</style>
+  <![endif]-->
 </head>
-<body>
-  <div class="wrapper">
-    <div class="logo">
-      <span class="logo-mark"></span>
-      <span class="logo-text">ZeroClaw</span>
-    </div>
+<body style="margin:0;padding:0;background-color:#0a0e1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
 
-    <div class="card">
-      <h1>Reset your password</h1>
-      <p>
-        We received a request to reset the password for your ZeroClaw account
-        associated with <strong style="color: #e2e8f0;">${to}</strong>.
-        Click the button below to set a new password.
-      </p>
+<!-- Outer wrapper table for full-width dark background -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0a0e1a;">
+  <tr>
+    <td align="center" style="padding:40px 16px;">
 
-      <a href="${resetUrl}" class="btn">Reset Password</a>
+      <!-- Content table -->
+      <table role="presentation" width="520" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;width:100%;">
 
-      <hr class="divider" />
+        <!-- Logo row -->
+        <tr>
+          <td style="padding-bottom:28px;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="width:36px;height:36px;background-color:#14b8a6;border-radius:8px;" width="36" height="36">&nbsp;</td>
+                <td style="padding-left:10px;font-size:20px;font-weight:700;color:#f1f5f9;letter-spacing:-0.02em;">ZeroClaw</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
 
-      <p class="url-fallback">
-        If the button above doesn't work, copy and paste this link into your browser:<br />
-        <a href="${resetUrl}">${resetUrl}</a>
-      </p>
+        <!-- Card -->
+        <tr>
+          <td style="background-color:#111827;border:1px solid #1e293b;border-radius:12px;padding:32px;">
 
-      <p class="expiry">This link will expire in <strong>1 hour</strong>.</p>
-    </div>
+            <!-- Heading -->
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="font-size:22px;font-weight:700;color:#f1f5f9;padding-bottom:12px;">Reset your password</td>
+              </tr>
+              <tr>
+                <td style="font-size:15px;line-height:1.6;color:#94a3b8;padding-bottom:24px;">
+                  We received a request to reset the password for your ZeroClaw account
+                  associated with <strong style="color:#e2e8f0;">${to}</strong>.
+                  Click the button below to set a new password.
+                </td>
+              </tr>
 
-    <p class="footer">
-      If you didn't request a password reset, you can safely ignore this email.
-      Your password will not change.<br /><br />
-      &copy; ${new Date().getFullYear()} ZeroClaw &mdash;
-      <a href="https://zeroclaw.ca">zeroclaw.ca</a>
-    </p>
-  </div>
+              <!-- CTA Button -->
+              <tr>
+                <td style="padding-bottom:28px;">
+                  <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td style="background-color:#14b8a6;border-radius:8px;text-align:center;">
+                        <a href="${resetUrl}" target="_blank" style="display:inline-block;padding:13px 28px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">Reset Password</a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Divider -->
+              <tr>
+                <td style="border-top:1px solid #1e293b;padding-top:28px;font-size:13px;color:#64748b;line-height:1.6;word-break:break-all;">
+                  If the button above doesn&rsquo;t work, copy and paste this link into your browser:<br />
+                  <a href="${resetUrl}" style="color:#14b8a6;text-decoration:none;">${resetUrl}</a>
+                </td>
+              </tr>
+
+              <!-- Expiry -->
+              <tr>
+                <td style="font-size:13px;color:#64748b;padding-top:20px;">
+                  This link will expire in <strong style="color:#94a3b8;">1 hour</strong>.
+                </td>
+              </tr>
+            </table>
+
+          </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+          <td style="padding-top:32px;font-size:12px;color:#475569;text-align:center;line-height:1.6;">
+            If you didn&rsquo;t request a password reset, you can safely ignore this email.
+            Your password will not change.<br /><br />
+            &copy; ${new Date().getFullYear()} ZeroClaw &mdash;
+            <a href="https://zeroclaw.ca" style="color:#14b8a6;text-decoration:none;">zeroclaw.ca</a>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
+
 </body>
 </html>`;
 
