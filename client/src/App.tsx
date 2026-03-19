@@ -115,6 +115,16 @@ function AppContent() {
   if (location === "/pricing") {
     return <PricingPage />;
   }
+  // Password reset link from email — public, renders auth page with token
+  if (location === "/reset-password") {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token") || "";
+    return (
+      <AuthProvider>
+        <AuthPage resetToken={token} />
+      </AuthProvider>
+    );
+  }
 
   return (
     <AuthProvider>

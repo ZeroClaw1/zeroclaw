@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -62,7 +63,7 @@ function PasswordStrengthMeter({ password }: { password: string }) {
   );
 }
 
-export default function AuthPage() {
+export default function AuthPage({ resetToken: initialResetToken }: { resetToken?: string } = {}) {
   const { login, register, loginError, registerError, isLoginPending, isRegisterPending } = useAuth();
 
   const [loginEmail, setLoginEmail] = useState("");
@@ -84,12 +85,21 @@ export default function AuthPage() {
   const [resetToken, setResetToken] = useState<string | null>(null);
 
   // Reset password state
-  const [showResetPassword, setShowResetPassword] = useState(false);
-  const [resetTokenInput, setResetTokenInput] = useState("");
+  const [showResetPassword, setShowResetPassword] = useState(!!initialResetToken);
+  const [resetTokenInput, setResetTokenInput] = useState(initialResetToken || "");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetLoading, setResetLoading] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
+
+  // If opened via /reset-password?token=..., auto-show the reset form
+  useEffect(() => {
+    if (initialResetToken) {
+      setShowForgotPassword(true);
+      setShowResetPassword(true);
+      setResetTokenInput(initialResetToken);
+    }
+  }, [initialResetToken]);
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,6 +146,10 @@ export default function AuthPage() {
         setResetToken(null);
         setResetTokenInput("");
         setResetNewPassword("");
+        // If arrived via /reset-password link, navigate to sign-in page
+        if (initialResetToken) {
+          window.location.href = "/auth";
+        }
       }, 2000);
     } catch (err: any) {
       setResetError(err.message?.replace(/^\d+:\s*/, "") || "Failed to reset password");
@@ -341,7 +355,11 @@ export default function AuthPage() {
             <Card className="w-full max-w-md border border-primary/20 shadow-lg shadow-primary/5 bg-card mx-4">
               <CardHeader className="pb-2">
                 <button
-                  onClick={() => { setShowForgotPassword(false); setShowResetPassword(false); setResetToken(null); setForgotMessage(null); setForgotError(null); }}
+                  onClick={() => {
+                    setShowForgotPassword(false); setShowResetPassword(false); setResetToken(null); setForgotMessage(null); setForgotError(null);
+                    // If user arrived via /reset-password link, navigate back to sign-in
+                    if (initialResetToken) { window.history.replaceState({}, "", "/auth"); }
+                  }}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors mb-2"
                   data-testid="back-to-login"
                 >
