@@ -1,49 +1,41 @@
 /**
  * Email service for ZeroClaw.
- * Uses nodemailer with SMTP transport configured via environment variables.
- * Falls back to console logging when SMTP_HOST is not configured (local dev).
+ * Uses Resend HTTP API (SMTP is blocked on Railway).
+ * Falls back to console logging when no API key is configured (local dev).
  */
-import nodemailer, { type Transporter } from "nodemailer";
+import { Resend } from "resend";
 
 const FROM_ADDRESS = process.env.SMTP_FROM || "noreply@zeroclaw.ca";
 
-/**
- * Create a fresh transporter each time to avoid caching broken connections.
- * Adds connection and greeting timeouts so Railway doesn't hang.
- */
-function createTransporter(): Transporter | null {
-  if (!process.env.SMTP_HOST) return null;
+// Use RESEND_API_KEY if set, otherwise fall back to SMTP_PASS (same key)
+const API_KEY = process.env.RESEND_API_KEY || process.env.SMTP_PASS;
 
-  const port = parseInt(process.env.SMTP_PORT || "587", 10);
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port,
-    secure: port === 465, // true for 465, false for 587 (STARTTLS)
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-    connectionTimeout: 10000, // 10s to connect
-    greetingTimeout: 10000,   // 10s for SMTP greeting
-    socketTimeout: 15000,     // 15s for socket inactivity
-  });
+let _resend: Resend | null = null;
+
+function getResend(): Resend | null {
+  if (!API_KEY) return null;
+  if (!_resend) {
+    _resend = new Resend(API_KEY);
+  }
+  return _resend;
 }
 
 /**
- * Send an email. If no SMTP_HOST is configured, logs to console instead.
- * Throws a short, user-friendly error message on failure (not raw stack).
+ * Send an email via Resend HTTP API.
+ * If no API key is configured, logs to console instead.
+ * Throws a short, user-friendly error message on failure.
  */
 export async function sendEmail(
   to: string,
   subject: string,
   html: string
 ): Promise<void> {
-  const transporter = createTransporter();
+  const resend = getResend();
 
-  if (!transporter) {
+  if (!resend) {
     // Graceful degradation — log to console in local dev
     console.log(
-      `[email] No SMTP configured — would send email:\n` +
+      `[email] No Resend API key configured — would send email:\n` +
         `  To: ${to}\n` +
         `  Subject: ${subject}\n` +
         `  Body: ${html.replace(/<[^>]+>/g, "").trim().slice(0, 200)}...`
@@ -52,23 +44,25 @@ export async function sendEmail(
   }
 
   try {
-    await transporter.sendMail({
+    const { data, error } = await resend.emails.send({
       from: FROM_ADDRESS,
-      to,
+      to: [to],
       subject,
       html,
     });
-  } catch (err: any) {
-    const code = err?.code || "UNKNOWN";
-    console.error(`[email] SMTP send failed (${code}):`, err.message || err);
 
-    // Throw a concise error the route handler can safely expose
-    if (code === "ETIMEDOUT" || code === "ESOCKET" || code === "ECONNECTION") {
-      throw new Error("Email service temporarily unavailable. Please try again later.");
+    if (error) {
+      console.error("[email] Resend API error:", error);
+      throw new Error(error.message || "Failed to send email");
     }
-    if (code === "EAUTH") {
-      throw new Error("Email service authentication error. Please contact support.");
+
+    console.log(`[email] Sent successfully (id: ${data?.id})`);
+  } catch (err: any) {
+    // If it's already our user-friendly error, re-throw
+    if (err.message && err.message.length < 120) {
+      throw err;
     }
+    console.error("[email] Send failed:", err.message || err);
     throw new Error("Failed to send email. Please try again later.");
   }
 }
