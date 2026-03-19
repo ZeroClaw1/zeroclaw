@@ -148,12 +148,14 @@ export interface IStorage {
 
   // Claude Code
   getClaudeCodeConfig(userId: string): ClaudeCodeConfig | null;
+  getClaudeCodeConfigRaw(userId: string): ClaudeCodeConfig | null;
   updateClaudeCodeConfig(userId: string, data: UpdateClaudeCodeConfig): ClaudeCodeConfig;
   getCodingTasks(userId: string): CodingTask[];
   getCodingTask(userId: string, taskId: string): CodingTask | undefined;
   submitCodingTask(userId: string, task: SubmitCodingTask): CodingTask;
   updateCodingTask(userId: string, taskId: string, updates: Partial<CodingTask>): CodingTask | undefined;
   deleteCodingTask(userId: string, taskId: string): boolean;
+  incrementClaudeCodeTokens(userId: string, tokens: number): void;
 
   // Audit Log
   addAuditLog(userId: string, entry: Omit<AuditLogEntry, "id" | "timestamp">): AuditLogEntry;
@@ -1223,6 +1225,10 @@ export class MemStorage implements IStorage {
     return this.claudeCodeConfigs.get(userId) ?? null;
   }
 
+  getClaudeCodeConfigRaw(userId: string): ClaudeCodeConfig | null {
+    return this.claudeCodeConfigs.get(userId) ?? null;
+  }
+
   updateClaudeCodeConfig(userId: string, data: UpdateClaudeCodeConfig): ClaudeCodeConfig {
     let config = this.claudeCodeConfigs.get(userId);
     if (!config) {
@@ -1293,20 +1299,6 @@ export class MemStorage implements IStorage {
       config.lastUsed = new Date().toISOString();
     }
 
-    // Simulate task execution
-    setTimeout(() => {
-      codingTask.status = "running";
-    }, 500);
-    setTimeout(() => {
-      codingTask.status = "completed";
-      codingTask.response = `Task received. Claude Code integration will process this when connected to the Anthropic API.\n\nYour prompt:\n\`\`\`\n${task.prompt}\n\`\`\`\n\nModel: ${codingTask.model}\nContext notes: ${codingTask.contextNotes.length > 0 ? codingTask.contextNotes.join(", ") : "none"}`;
-      codingTask.tokensUsed = Math.floor(200 + Math.random() * 800);
-      codingTask.completedAt = new Date().toISOString();
-      if (config) {
-        config.totalTokensUsed += codingTask.tokensUsed;
-      }
-    }, 2000);
-
     return codingTask;
   }
 
@@ -1325,6 +1317,13 @@ export class MemStorage implements IStorage {
     if (idx === -1) return false;
     tasks.splice(idx, 1);
     return true;
+  }
+
+  incrementClaudeCodeTokens(userId: string, tokens: number): void {
+    const config = this.claudeCodeConfigs.get(userId);
+    if (config) {
+      config.totalTokensUsed += tokens;
+    }
   }
 
   // ---- Audit Log ----

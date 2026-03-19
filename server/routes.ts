@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { randomBytes, createHash } from "crypto";
 import bcrypt from "bcryptjs";
+import Anthropic from "@anthropic-ai/sdk";
 import session from "express-session";
 import MemoryStoreFactory from "memorystore";
 import connectPgSimple from "connect-pg-simple";
@@ -1597,28 +1598,114 @@ export async function registerRoutes(
     res.json(masked);
   });
 
-  app.post("/api/claude-code/test", (req, res) => {
+  app.post("/api/claude-code/test", async (req, res) => {
     const userId = req.session.userId!;
-    const config = storage.getClaudeCodeConfig(userId);
+    const config = storage.getClaudeCodeConfigRaw(userId);
     if (!config || !config.apiKey) {
       return res.json({ success: false, message: "No API key configured" });
     }
-    // Simulate API key test (real implementation would call Anthropic API)
-    const isValid = config.apiKey.startsWith("sk-ant-");
-    if (isValid) {
+    try {
+      const client = new Anthropic({ apiKey: config.apiKey });
+      await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1,
+        messages: [{ role: "user", content: "ping" }],
+      });
       storage.updateClaudeCodeConfig(userId, {});
       res.json({ success: true, message: "API key is valid. Connected to Anthropic API." });
-    } else {
-      res.json({ success: false, message: "Invalid API key format. Expected sk-ant-..." });
+    } catch (err: any) {
+      const msg = err?.status === 401 ? "Invalid API key" : (err?.message || "Connection failed");
+      res.json({ success: false, message: msg });
     }
   });
 
-  app.post("/api/claude-code/tasks", (req, res) => {
+  app.post("/api/claude-code/tasks", async (req, res) => {
     const userId = req.session.userId!;
     const parsed = submitCodingTaskSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    const config = storage.getClaudeCodeConfigRaw(userId);
+    if (!config || !config.apiKey) {
+      return res.status(400).json({ error: "Claude Code API key not configured" });
+    }
+
+    // Create the task record in storage (queued)
     const task = storage.submitCodingTask(userId, parsed.data);
+    // Return immediately so the UI shows the queued task
     res.status(201).json(task);
+
+    // Build context from Obsidian vault if enabled
+    let contextContent = "";
+    if (config.useObsidianContext) {
+      const notes = storage.getVaultNotes(userId);
+      if (notes.length > 0) {
+        // Pick the most relevant notes (up to 5) based on title/tag overlap with the prompt
+        const promptLower = parsed.data.prompt.toLowerCase();
+        const scored = notes.map(n => {
+          let score = 0;
+          const words = promptLower.split(/\s+/);
+          words.forEach(w => {
+            if (w.length > 3 && n.title.toLowerCase().includes(w)) score += 3;
+            if (n.tags.some(t => t.toLowerCase().includes(w))) score += 2;
+          });
+          if (n.isStructureNote) score += 1;
+          return { note: n, score };
+        }).filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
+
+        if (scored.length > 0) {
+          const noteIds = scored.map(s => s.note.id);
+          storage.updateCodingTask(userId, task.id, { contextNotes: noteIds });
+          contextContent = "\n\nRelevant context from user's knowledge base:\n" +
+            scored.map(s => `## ${s.note.title}\nPath: ${s.note.path}\nTags: ${s.note.tags.join(", ")}\nLinks: ${s.note.links.join(", ")}`).join("\n\n");
+        }
+      }
+    }
+
+    // Execute the task asynchronously via Anthropic API
+    storage.updateCodingTask(userId, task.id, { status: "running" });
+
+    try {
+      const client = new Anthropic({ apiKey: config.apiKey });
+
+      const systemPrompt = [
+        "You are Claude Code, an AI programming assistant integrated into ZeroClaw.",
+        "You handle coding tasks delegated by the orchestrator.",
+        "Provide clear, production-ready code with explanations.",
+        config.systemPrompt ? `\nCustom instructions: ${config.systemPrompt}` : "",
+        config.allowedTools.length > 0 ? `\nYou have access to: ${config.allowedTools.join(", ")}` : "",
+        contextContent,
+      ].filter(Boolean).join("\n");
+
+      const response = await client.messages.create({
+        model: config.model,
+        max_tokens: config.maxTokens,
+        system: systemPrompt,
+        messages: [{ role: "user", content: parsed.data.prompt }],
+      });
+
+      const responseText = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map(b => b.text)
+        .join("\n");
+
+      const tokensUsed = (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
+
+      storage.updateCodingTask(userId, task.id, {
+        status: "completed",
+        response: responseText,
+        tokensUsed,
+        completedAt: new Date().toISOString(),
+      });
+
+      // Update config usage stats
+      storage.incrementClaudeCodeTokens(userId, tokensUsed);
+    } catch (err: any) {
+      storage.updateCodingTask(userId, task.id, {
+        status: "failed",
+        error: err?.message || "Unknown error calling Anthropic API",
+        completedAt: new Date().toISOString(),
+      });
+    }
   });
 
   app.get("/api/claude-code/tasks", (req, res) => {
