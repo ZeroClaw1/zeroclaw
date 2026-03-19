@@ -20,6 +20,7 @@ import {
   Shield,
   Brain,
   Code2,
+  Users,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,7 @@ const navItems = [
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
   { label: "Webhooks", icon: Webhook, href: "/webhooks" },
   { label: "Marketplace", icon: Store, href: "/marketplace" },
+  { label: "Teams", icon: Users, href: "/teams" },
 ];
 
 function OpenClawLogo() {

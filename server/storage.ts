@@ -1,5 +1,64 @@
 import { randomUUID } from "crypto";
-import { persistUser, loadUsersFromDb } from "./db";
+import {
+  persistUser,
+  loadUsersFromDb,
+  dbGetClaudeCodeConfig,
+  dbUpsertClaudeCodeConfig,
+  dbGetCodingTasks,
+  dbUpsertCodingTask,
+  dbDeleteCodingTask,
+  dbGetVaultConfig,
+  dbUpsertVaultConfig,
+  dbDeleteVaultConfig,
+  dbGetVaultNotes,
+  dbUpsertVaultNote,
+  dbDeleteVaultNotesByUser,
+  dbGetContextSessions,
+  dbUpsertContextSession,
+  dbDeleteContextSessionsByUser,
+  dbGetPipelines,
+  dbUpsertPipeline,
+  dbDeletePipeline,
+  dbGetAgents,
+  dbUpsertAgent,
+  dbDeleteAgent,
+  dbGetWorkflows,
+  dbUpsertWorkflow,
+  dbDeleteWorkflow,
+  dbGetDeployments,
+  dbUpsertDeployment,
+  dbGetPlans,
+  dbUpsertPlan,
+  dbDeletePlan,
+  dbGetDashboardSettings,
+  dbUpsertDashboardSettings,
+  dbGetSecrets,
+  dbUpsertSecret,
+  dbDeleteSecret,
+  dbGetWebhooks,
+  dbUpsertWebhook,
+  dbDeleteWebhook,
+  dbGetNotifications,
+  dbUpsertNotification,
+  dbMarkAllNotificationsRead,
+  dbClearNotifications,
+  dbGetAuditLog,
+  dbInsertAuditLog,
+  dbClearAuditLog,
+  dbGetApiKeys,
+  dbUpsertApiKey,
+  dbDeleteApiKey,
+  dbGetAuthEnabled,
+  dbUpsertAuthEnabled,
+  dbGetAgentTasks,
+  dbUpsertAgentTask,
+  dbDeleteAgentTask,
+  dbGetActivityEvents,
+  dbInsertActivityEvent,
+  dbTrimActivityEvents,
+  dbGetOpenClawConfig,
+  dbUpsertOpenClawConfig,
+} from "./db";
 import type {
   Pipeline, InsertPipeline, PipelineStep,
   Agent, InsertAgent,
@@ -28,6 +87,12 @@ import type {
   UpdateClaudeCodeConfig,
   CodingTask,
   SubmitCodingTask,
+  Team,
+  TeamMember,
+  TeamInvite,
+  TeamRole,
+  InsertTeam,
+  InviteTeamMember,
 } from "@shared/schema";
 
 // Internal type to attach userId to entities
@@ -162,6 +227,21 @@ export interface IStorage {
   getAuditLog(userId: string, options?: { resource?: string; action?: string; limit?: number }): AuditLogEntry[];
   clearAuditLog(userId: string): void;
 
+  // Teams
+  createTeam(ownerId: string, data: InsertTeam): Team;
+  getTeam(teamId: string): Team | undefined;
+  getTeamByOwner(ownerId: string): Team | undefined;
+  getTeamMembers(teamId: string): TeamMember[];
+  getTeamMember(teamId: string, userId: string): TeamMember | undefined;
+  addTeamMember(teamId: string, userId: string, role: TeamRole, invitedBy: string): TeamMember;
+  removeTeamMember(teamId: string, memberId: string): boolean;
+  createTeamInvite(teamId: string, email: string, role: TeamRole, invitedBy: string): TeamInvite;
+  getTeamInvitesByEmail(email: string): TeamInvite[];
+  getTeamInvite(inviteId: string): TeamInvite | undefined;
+  getTeamInvitesByTeam(teamId: string): TeamInvite[];
+  acceptInvite(inviteId: string): TeamInvite | undefined;
+  declineInvite(inviteId: string): boolean;
+
   // Admin
   getAllUsers(): User[];
   updateUserTier(userId: string, tier: SubscriptionTier): User | undefined;
@@ -241,6 +321,11 @@ export class MemStorage implements IStorage {
   private vaultNotes: Map<string, VaultNote[]> = new Map();
   private contextSessions: Map<string, ContextSession[]> = new Map();
 
+  // Teams data (global)
+  private teams: Map<string, Team> = new Map();
+  private teamMembers: Map<string, TeamMember> = new Map();
+  private teamInvites: Map<string, TeamInvite> = new Map();
+
   // Global data (no userId)
   private pipelineTemplates: PipelineTemplate[] = [];
   private skillMarketplace: SkillMarketplaceItem[] = [];
@@ -268,7 +353,7 @@ export class MemStorage implements IStorage {
           createdAt: u.createdAt,
         };
         this.users.set(user.id, user);
-        // Initialize per-user config stores if not already set
+        // Initialize per-user config stores with defaults (will be overwritten by DB data below)
         if (!this.openClawConfigs.has(user.id)) {
           this.openClawConfigs.set(user.id, { ...DEFAULT_OPENCLAW_CONFIG });
         }
@@ -283,8 +368,138 @@ export class MemStorage implements IStorage {
       if (dbUsers.length > 0) {
         console.log(`[storage] Loaded ${dbUsers.length} user(s) from database`);
       }
+      // Load all other entity data from DB
+      await this.loadFromDb();
     } catch (err) {
       console.error("[storage] Failed to load users from database:", err);
+    }
+  }
+
+  /** Load all non-user entity data from PostgreSQL into memory */
+  private async loadFromDb() {
+    try {
+      const userIds = Array.from(this.users.keys());
+      await Promise.all(userIds.map(async (userId) => {
+        try {
+          // Pipelines
+          const pipes = await dbGetPipelines(userId);
+          for (const p of pipes) {
+            this.pipelines.set(p.id, { ...p, _userId: userId });
+          }
+
+          // Agents
+          const ags = await dbGetAgents(userId);
+          for (const a of ags) {
+            this.agents.set(a.id, { ...a, _userId: userId });
+          }
+
+          // Workflows
+          const wfs = await dbGetWorkflows(userId);
+          for (const w of wfs) {
+            this.workflows.set(w.id, { ...w, _userId: userId });
+          }
+
+          // Deployments
+          const deps = await dbGetDeployments(userId);
+          for (const d of deps) {
+            this.deployments.set(d.id, { ...d, _userId: userId });
+          }
+
+          // Plans
+          const pls = await dbGetPlans(userId);
+          for (const p of pls) {
+            this.plans.set(p.id, { ...p, _userId: userId });
+          }
+
+          // OpenClaw config
+          const oc = await dbGetOpenClawConfig(userId);
+          if (oc) {
+            this.openClawConfigs.set(userId, oc);
+          }
+
+          // Dashboard settings
+          const ds = await dbGetDashboardSettings(userId);
+          if (ds) {
+            this.dashboardSettingsByUser.set(userId, ds);
+          }
+
+          // Notifications
+          const notifs = await dbGetNotifications(userId);
+          this.notificationsByUser.set(userId, notifs);
+
+          // Activity events
+          const acts = await dbGetActivityEvents(userId);
+          this.activityByUser.set(userId, acts);
+
+          // Audit log
+          const audit = await dbGetAuditLog(userId);
+          this.auditLogByUser.set(userId, audit);
+
+          // API keys
+          const keys = await dbGetApiKeys(userId);
+          for (const k of keys) {
+            this.apiKeys.set(k.id, { ...k, _userId: userId });
+          }
+
+          // Auth enabled
+          const authEnabled = await dbGetAuthEnabled(userId);
+          if (authEnabled !== null) {
+            this.authEnabledByUser.set(userId, authEnabled);
+          }
+
+          // Secrets
+          const secs = await dbGetSecrets(userId);
+          for (const s of secs) {
+            const { rawValue, ...secretPublic } = s;
+            this.secrets.set(s.id, { ...secretPublic, rawValue, _userId: userId });
+          }
+
+          // Webhooks
+          const whs = await dbGetWebhooks(userId);
+          for (const w of whs) {
+            this.webhooks.set(w.id, { ...w, _userId: userId });
+          }
+
+          // Agent tasks
+          const atasks = await dbGetAgentTasks(userId);
+          for (const t of atasks) {
+            this.agentTasks.set(t.id, { ...t, _userId: userId });
+          }
+
+          // Claude code config
+          const cc = await dbGetClaudeCodeConfig(userId);
+          if (cc) {
+            this.claudeCodeConfigs.set(userId, cc);
+          }
+
+          // Coding tasks
+          const cts = await dbGetCodingTasks(userId);
+          this.codingTasks.set(userId, cts);
+
+          // Vault config
+          const vc = await dbGetVaultConfig(userId);
+          if (vc) {
+            this.vaultConfigs.set(userId, vc);
+          }
+
+          // Vault notes
+          const vns = await dbGetVaultNotes(userId);
+          if (vns.length > 0) {
+            this.vaultNotes.set(userId, vns);
+          }
+
+          // Context sessions
+          const css = await dbGetContextSessions(userId);
+          if (css.length > 0) {
+            this.contextSessions.set(userId, css);
+          }
+        } catch (err) {
+          console.error(`[storage] Failed to load data for user ${userId}:`, err);
+        }
+      }));
+      console.log(`[storage] Loaded entity data from database for ${userIds.length} user(s)`);
+    } catch (err) {
+      console.error("[storage] Failed to load entity data from database:", err);
     }
   }
 
@@ -292,6 +507,13 @@ export class MemStorage implements IStorage {
   private persistUserToDb(user: User) {
     persistUser(user).catch((err) => {
       console.error(`[storage] Failed to persist user ${user.id}:`, err);
+    });
+  }
+
+  /** Fire-and-forget wrapper for any DB persist operation */
+  private persist(label: string, fn: () => Promise<void>) {
+    fn().catch((err) => {
+      console.error(`[storage] Failed to persist ${label}:`, err);
     });
   }
 
@@ -347,6 +569,9 @@ export class MemStorage implements IStorage {
     this.auditLogByUser.set(id, []);
     this.authEnabledByUser.set(id, false);
     this.persistUserToDb(user);
+    this.persist("openClawConfig", () => dbUpsertOpenClawConfig(id, { ...DEFAULT_OPENCLAW_CONFIG }));
+    this.persist("dashboardSettings", () => dbUpsertDashboardSettings(id, { ...DEFAULT_DASHBOARD_SETTINGS, widgetLayout: [...DEFAULT_DASHBOARD_SETTINGS.widgetLayout!] }));
+    this.persist("authEnabled", () => dbUpsertAuthEnabled(id, false));
     return user;
   }
 
@@ -401,6 +626,7 @@ export class MemStorage implements IStorage {
       envVars: data.envVars || {},
     };
     this.pipelines.set(id, pipeline);
+    this.persist("pipeline", () => dbUpsertPipeline(userId, pipeline));
     this.addActivity(userId, { type: "pipeline", message: `Pipeline "${pipeline.name}" created on ${pipeline.branch}`, status: "pending" });
     this.addAuditLog(userId, { action: "create", resource: "pipeline", resourceId: id, resourceName: pipeline.name, details: `Created on branch ${pipeline.branch}`, user: pipeline.author });
     return pipeline;
@@ -411,6 +637,7 @@ export class MemStorage implements IStorage {
     if (!pipeline || pipeline._userId !== userId) return undefined;
     pipeline.status = status;
     this.pipelines.set(id, pipeline);
+    this.persist("pipeline", () => dbUpsertPipeline(userId, pipeline));
     return pipeline;
   }
 
@@ -419,6 +646,7 @@ export class MemStorage implements IStorage {
     if (!pipeline || pipeline._userId !== userId) return false;
     this.addActivity(userId, { type: "pipeline", message: `Pipeline "${pipeline.name}" deleted`, status: "cancelled" });
     this.addAuditLog(userId, { action: "delete", resource: "pipeline", resourceId: id, resourceName: pipeline.name, details: "Pipeline deleted", user: "user" });
+    this.persist("pipeline delete", () => dbDeletePipeline(userId, id));
     return this.pipelines.delete(id);
   }
 
@@ -449,6 +677,7 @@ export class MemStorage implements IStorage {
       memoryUsage: 0,
     };
     this.agents.set(id, agent);
+    this.persist("agent", () => dbUpsertAgent(userId, agent));
     this.addActivity(userId, { type: "agent", message: `Agent "${agent.name}" registered (${agent.model})`, status: "offline" });
     this.addAuditLog(userId, { action: "create", resource: "agent", resourceId: id, resourceName: agent.name, details: `Registered with model ${agent.model}`, user: "user" });
     return agent;
@@ -459,6 +688,7 @@ export class MemStorage implements IStorage {
     if (!agent || agent._userId !== userId) return undefined;
     const updated: WithUserId<Agent> = { ...agent, ...data, id: agent.id, _userId: userId };
     this.agents.set(id, updated);
+    this.persist("agent", () => dbUpsertAgent(userId, updated));
     return updated;
   }
 
@@ -467,6 +697,7 @@ export class MemStorage implements IStorage {
     if (!agent || agent._userId !== userId) return false;
     this.addActivity(userId, { type: "agent", message: `Agent "${agent.name}" removed`, status: "offline" });
     this.addAuditLog(userId, { action: "delete", resource: "agent", resourceId: id, resourceName: agent.name, details: "Agent removed", user: "user" });
+    this.persist("agent delete", () => dbDeleteAgent(userId, id));
     return this.agents.delete(id);
   }
 
@@ -497,6 +728,7 @@ export class MemStorage implements IStorage {
       edges: data.edges || [],
     };
     this.workflows.set(id, workflow);
+    this.persist("workflow", () => dbUpsertWorkflow(userId, workflow));
     this.addActivity(userId, { type: "openclaw", message: `Workflow "${workflow.name}" created`, status: "pending" });
     return workflow;
   }
@@ -513,6 +745,7 @@ export class MemStorage implements IStorage {
       ...(data.edges !== undefined ? { edges: data.edges } : {}),
     };
     this.workflows.set(id, updated);
+    this.persist("workflow", () => dbUpsertWorkflow(userId, updated));
     return updated;
   }
 
@@ -520,6 +753,7 @@ export class MemStorage implements IStorage {
     const workflow = this.workflows.get(id);
     if (!workflow || workflow._userId !== userId) return false;
     this.addActivity(userId, { type: "openclaw", message: `Workflow "${workflow.name}" deleted`, status: "cancelled" });
+    this.persist("workflow delete", () => dbDeleteWorkflow(userId, id));
     return this.workflows.delete(id);
   }
 
@@ -553,6 +787,7 @@ export class MemStorage implements IStorage {
       url: data.url,
     };
     this.deployments.set(id, deployment);
+    this.persist("deployment", () => dbUpsertDeployment(userId, deployment));
     this.addActivity(userId, {
       type: "deployment",
       message: `Deploying ${deployment.pipelineName} v${deployment.version} to ${deployment.environment}`,
@@ -565,6 +800,7 @@ export class MemStorage implements IStorage {
       deployment.status = "success";
       deployment.duration = Math.floor(15 + Math.random() * 45);
       this.deployments.set(id, deployment);
+      this.persist("deployment", () => dbUpsertDeployment(userId, deployment));
       this.addActivity(userId, {
         type: "deployment",
         message: `${deployment.pipelineName} v${deployment.version} deployed to ${deployment.environment}`,
@@ -580,6 +816,7 @@ export class MemStorage implements IStorage {
     if (!deployment || deployment._userId !== userId) return undefined;
     deployment.status = status;
     this.deployments.set(id, deployment);
+    this.persist("deployment", () => dbUpsertDeployment(userId, deployment));
     return deployment;
   }
 
@@ -605,7 +842,9 @@ export class MemStorage implements IStorage {
     activity.push(full);
     if (activity.length > 200) {
       this.activityByUser.set(userId, activity.slice(-100));
+      this.persist("activity trim", () => dbTrimActivityEvents(userId));
     }
+    this.persist("activity", () => dbInsertActivityEvent(userId, full));
     return full;
   }
 
@@ -633,6 +872,7 @@ export class MemStorage implements IStorage {
       if (data.securityTools.clawBands !== undefined) config.securityTools.clawBands = data.securityTools.clawBands;
       if (data.securityTools.aquaman !== undefined) config.securityTools.aquaman = data.securityTools.aquaman;
     }
+    this.persist("openClawConfig", () => dbUpsertOpenClawConfig(userId, config!));
     return { ...config };
   }
 
@@ -643,6 +883,7 @@ export class MemStorage implements IStorage {
       this.openClawConfigs.set(userId, config);
     }
     config.connected = connected;
+    this.persist("openClawConfig", () => dbUpsertOpenClawConfig(userId, config!));
     if (connected) {
       this.addActivity(userId, { type: "openclaw", message: "OpenClaw gateway connected", status: "success" });
     } else {
@@ -705,6 +946,7 @@ export class MemStorage implements IStorage {
       updatedAt: now,
     };
     this.plans.set(id, plan);
+    this.persist("plan", () => dbUpsertPlan(userId, plan));
     this.addActivity(userId, { type: "openclaw", message: `Plan "${plan.title}" created`, status: "pending" });
     return plan;
   }
@@ -722,6 +964,7 @@ export class MemStorage implements IStorage {
       updatedAt: new Date().toISOString(),
     };
     this.plans.set(id, updated);
+    this.persist("plan", () => dbUpsertPlan(userId, updated));
     return updated;
   }
 
@@ -729,6 +972,7 @@ export class MemStorage implements IStorage {
     const plan = this.plans.get(id);
     if (!plan || plan._userId !== userId) return false;
     this.addActivity(userId, { type: "openclaw", message: `Plan "${plan.title}" deleted`, status: "cancelled" });
+    this.persist("plan delete", () => dbDeletePlan(userId, id));
     return this.plans.delete(id);
   }
 
@@ -791,16 +1035,19 @@ export class MemStorage implements IStorage {
     if (notifs.length > 100) {
       this.notificationsByUser.set(userId, notifs.slice(-50));
     }
+    this.persist("notification", () => dbUpsertNotification(userId, notification));
     return notification;
   }
 
   markAllRead(userId: string): void {
     const notifs = this.notificationsByUser.get(userId) || [];
     notifs.forEach((n) => { n.read = true; });
+    this.persist("notifications markAllRead", () => dbMarkAllNotificationsRead(userId));
   }
 
   clearNotifications(userId: string): void {
     this.notificationsByUser.set(userId, []);
+    this.persist("notifications clear", () => dbClearNotifications(userId));
   }
 
   // ---- Dashboard Settings ----
@@ -831,6 +1078,7 @@ export class MemStorage implements IStorage {
     if (data.autoReconnect !== undefined) settings.autoReconnect = data.autoReconnect;
     if (data.heartbeatInterval !== undefined) settings.heartbeatInterval = data.heartbeatInterval;
     if (data.widgetLayout !== undefined) settings.widgetLayout = data.widgetLayout;
+    this.persist("dashboardSettings", () => dbUpsertDashboardSettings(userId, settings!));
     return { ...settings };
   }
 
@@ -905,6 +1153,7 @@ export class MemStorage implements IStorage {
       scopes: data.scopes || ["*"],
     };
     this.apiKeys.set(id, { ...apiKey, rawKey: raw, _userId: userId });
+    this.persist("apiKey", () => dbUpsertApiKey(userId, { ...apiKey, rawKey: raw }));
     this.addActivity(userId, { type: "openclaw", message: `API key "${data.name}" created`, status: "success" });
     return { apiKey, rawKey: raw };
   }
@@ -913,6 +1162,7 @@ export class MemStorage implements IStorage {
     const entry = this.apiKeys.get(id);
     if (!entry || entry._userId !== userId) return false;
     this.addActivity(userId, { type: "openclaw", message: `API key "${entry.name}" revoked`, status: "cancelled" });
+    this.persist("apiKey delete", () => dbDeleteApiKey(userId, id));
     return this.apiKeys.delete(id);
   }
 
@@ -922,6 +1172,7 @@ export class MemStorage implements IStorage {
 
   setAuthEnabled(userId: string, enabled: boolean): void {
     this.authEnabledByUser.set(userId, enabled);
+    this.persist("authEnabled", () => dbUpsertAuthEnabled(userId, enabled));
   }
 
   // ---- Secrets ----
@@ -952,6 +1203,7 @@ export class MemStorage implements IStorage {
       updatedAt: now,
     };
     this.secrets.set(id, { ...secret, rawValue: data.value, _userId: userId });
+    this.persist("secret", () => dbUpsertSecret(userId, { ...secret, rawValue: data.value }));
     this.addAuditLog(userId, { action: "create", resource: "secret", resourceId: id, resourceName: data.name, details: `Scope: ${secret.scope}`, user: "user" });
     return { secret, rawValue: data.value };
   }
@@ -960,6 +1212,7 @@ export class MemStorage implements IStorage {
     const entry = this.secrets.get(id);
     if (!entry || entry._userId !== userId) return false;
     this.addAuditLog(userId, { action: "delete", resource: "secret", resourceId: id, resourceName: entry.name, details: "Secret deleted", user: "user" });
+    this.persist("secret delete", () => dbDeleteSecret(userId, id));
     return this.secrets.delete(id);
   }
 
@@ -989,6 +1242,7 @@ export class MemStorage implements IStorage {
       createdAt: new Date().toISOString(),
     };
     this.webhooks.set(id, webhook);
+    this.persist("webhook", () => dbUpsertWebhook(userId, webhook));
     this.addAuditLog(userId, { action: "create", resource: "webhook", resourceId: id, resourceName: data.name, details: `Event: ${data.event}, branch: ${webhook.branch}`, user: "user" });
     return webhook;
   }
@@ -1005,6 +1259,7 @@ export class MemStorage implements IStorage {
       ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
     };
     this.webhooks.set(id, updated);
+    this.persist("webhook", () => dbUpsertWebhook(userId, updated));
     return updated;
   }
 
@@ -1012,6 +1267,7 @@ export class MemStorage implements IStorage {
     const webhook = this.webhooks.get(id);
     if (!webhook || webhook._userId !== userId) return false;
     this.addAuditLog(userId, { action: "delete", resource: "webhook", resourceId: id, resourceName: webhook.name, details: "Webhook deleted", user: "user" });
+    this.persist("webhook delete", () => dbDeleteWebhook(userId, id));
     return this.webhooks.delete(id);
   }
 
@@ -1056,6 +1312,7 @@ export class MemStorage implements IStorage {
       createdAt: new Date().toISOString(),
     };
     this.agentTasks.set(id, task);
+    this.persist("agentTask", () => dbUpsertAgentTask(userId, task));
     this.addAuditLog(userId, { action: "create", resource: "agent", resourceId: id, resourceName: task.title, details: `Task assigned to agent ${data.agentId}`, user: "user" });
     return task;
   }
@@ -1065,12 +1322,14 @@ export class MemStorage implements IStorage {
     if (!task || task._userId !== userId) return undefined;
     const updated: WithUserId<AgentTask> = { ...task, ...data, id: task.id, _userId: userId };
     this.agentTasks.set(id, updated);
+    this.persist("agentTask", () => dbUpsertAgentTask(userId, updated));
     return updated;
   }
 
   deleteAgentTask(userId: string, id: string): boolean {
     const task = this.agentTasks.get(id);
     if (!task || task._userId !== userId) return false;
+    this.persist("agentTask delete", () => dbDeleteAgentTask(userId, id));
     return this.agentTasks.delete(id);
   }
 
@@ -1093,6 +1352,7 @@ export class MemStorage implements IStorage {
     if (!agent.skills.includes(skill.name)) {
       agent.skills.push(skill.name);
       this.agents.set(agentId, agent);
+      this.persist("agent", () => dbUpsertAgent(userId, agent));
     }
     // If installing Obsidian Vault skill, also initialize vault config
     if (id === "skill-013" && !this.vaultConfigs.has(userId)) {
@@ -1109,11 +1369,15 @@ export class MemStorage implements IStorage {
     skill.installed = false;
     agent.skills = agent.skills.filter(s => s !== skill.name);
     this.agents.set(agentId, agent);
+    this.persist("agent", () => dbUpsertAgent(userId, agent));
     // If uninstalling Obsidian Vault skill, clear vault data
     if (id === "skill-013") {
       this.vaultConfigs.delete(userId);
       this.vaultNotes.delete(userId);
       this.contextSessions.delete(userId);
+      this.persist("vaultConfig delete", () => dbDeleteVaultConfig(userId));
+      this.persist("vaultNotes delete", () => dbDeleteVaultNotesByUser(userId));
+      this.persist("contextSessions delete", () => dbDeleteContextSessionsByUser(userId));
     }
     this.addAuditLog(userId, { action: "delete", resource: "skill", resourceId: id, resourceName: skill.name, details: `Uninstalled from agent ${agent.name}`, user: "user" });
     return true;
@@ -1126,6 +1390,9 @@ export class MemStorage implements IStorage {
     this.vaultConfigs.delete(userId);
     this.vaultNotes.delete(userId);
     this.contextSessions.delete(userId);
+    this.persist("vaultConfig delete", () => dbDeleteVaultConfig(userId));
+    this.persist("vaultNotes delete", () => dbDeleteVaultNotesByUser(userId));
+    this.persist("contextSessions delete", () => dbDeleteContextSessionsByUser(userId));
     this.addAuditLog(userId, { action: "delete", resource: "skill", resourceId: "skill-013", resourceName: skill.name, details: "Uninstalled Obsidian Vault skill", user: "user" });
     return true;
   }
@@ -1152,12 +1419,21 @@ export class MemStorage implements IStorage {
     this.vaultConfigs.set(userId, config);
     this.vaultNotes.set(userId, notes);
 
+    const demoSessions = [
+      { id: "ctx-001", agentId: "agent-1", notesLoaded: 8, tokensUsed: 12400, tokenBudget: 32000, retrievalHits: 23, startedAt: new Date(Date.now() - 3600000).toISOString(), status: "active" as const },
+      { id: "ctx-002", agentId: "agent-2", notesLoaded: 3, tokensUsed: 4200, tokenBudget: 32000, retrievalHits: 7, startedAt: new Date(Date.now() - 7200000).toISOString(), status: "idle" as const },
+      { id: "ctx-003", agentId: "agent-3", notesLoaded: 12, tokensUsed: 28900, tokenBudget: 32000, retrievalHits: 45, startedAt: new Date(Date.now() - 86400000).toISOString(), status: "expired" as const },
+    ];
     // Create demo context sessions
-    this.contextSessions.set(userId, [
-      { id: "ctx-001", agentId: "agent-1", notesLoaded: 8, tokensUsed: 12400, tokenBudget: 32000, retrievalHits: 23, startedAt: new Date(Date.now() - 3600000).toISOString(), status: "active" },
-      { id: "ctx-002", agentId: "agent-2", notesLoaded: 3, tokensUsed: 4200, tokenBudget: 32000, retrievalHits: 7, startedAt: new Date(Date.now() - 7200000).toISOString(), status: "idle" },
-      { id: "ctx-003", agentId: "agent-3", notesLoaded: 12, tokensUsed: 28900, tokenBudget: 32000, retrievalHits: 45, startedAt: new Date(Date.now() - 86400000).toISOString(), status: "expired" },
-    ]);
+    this.contextSessions.set(userId, demoSessions);
+    // Persist to DB
+    this.persist("vaultConfig", () => dbUpsertVaultConfig(userId, config));
+    for (const note of notes) {
+      this.persist("vaultNote", () => dbUpsertVaultNote(userId, note));
+    }
+    for (const session of demoSessions) {
+      this.persist("contextSession", () => dbUpsertContextSession(userId, session));
+    }
   }
 
   private createDemoNotes(): VaultNote[] {
@@ -1191,6 +1467,7 @@ export class MemStorage implements IStorage {
     if (!existing) throw new Error("No vault config found");
     const updated = { ...existing, ...data };
     this.vaultConfigs.set(userId, updated);
+    this.persist("vaultConfig", () => dbUpsertVaultConfig(userId, updated));
     return updated;
   }
 
@@ -1214,7 +1491,7 @@ export class MemStorage implements IStorage {
       skill.installed = true;
       skill.downloads += 1;
     }
-    // Initialize vault data
+    // Initialize vault data (also persists to DB)
     this.initializeVaultData(userId, vaultPath, syncMethod);
     this.addAuditLog(userId, { action: "install", resource: "skill", resourceId: "skill-013", resourceName: "Obsidian Vault", details: `Connected vault at ${vaultPath}`, user: "user" });
     return this.vaultConfigs.get(userId)!;
@@ -1268,6 +1545,7 @@ export class MemStorage implements IStorage {
     if (data.useObsidianContext !== undefined) config.useObsidianContext = data.useObsidianContext;
     if (data.allowedTools !== undefined) config.allowedTools = data.allowedTools;
     if (data.systemPrompt !== undefined) config.systemPrompt = data.systemPrompt;
+    this.persist("claudeCodeConfig", () => dbUpsertClaudeCodeConfig(userId, config!));
     return { ...config };
   }
 
@@ -1304,11 +1582,13 @@ export class MemStorage implements IStorage {
       this.codingTasks.set(userId, tasks);
     }
     tasks.push(codingTask);
+    this.persist("codingTask", () => dbUpsertCodingTask(userId, codingTask));
 
     // Update config stats
     if (config) {
       config.totalTasks += 1;
       config.lastUsed = new Date().toISOString();
+      this.persist("claudeCodeConfig", () => dbUpsertClaudeCodeConfig(userId, config!));
     }
 
     return codingTask;
@@ -1319,6 +1599,7 @@ export class MemStorage implements IStorage {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return undefined;
     Object.assign(task, updates);
+    this.persist("codingTask", () => dbUpsertCodingTask(userId, task));
     return { ...task };
   }
 
@@ -1328,6 +1609,7 @@ export class MemStorage implements IStorage {
     const idx = tasks.findIndex(t => t.id === taskId);
     if (idx === -1) return false;
     tasks.splice(idx, 1);
+    this.persist("codingTask delete", () => dbDeleteCodingTask(userId, taskId));
     return true;
   }
 
@@ -1335,6 +1617,7 @@ export class MemStorage implements IStorage {
     const config = this.claudeCodeConfigs.get(userId);
     if (config) {
       config.totalTokensUsed += tokens;
+      this.persist("claudeCodeConfig", () => dbUpsertClaudeCodeConfig(userId, config));
     }
   }
 
@@ -1354,6 +1637,7 @@ export class MemStorage implements IStorage {
     if (log.length > 500) {
       this.auditLogByUser.set(userId, log.slice(-250));
     }
+    this.persist("auditLog", () => dbInsertAuditLog(userId, full));
     return full;
   }
 
@@ -1370,6 +1654,7 @@ export class MemStorage implements IStorage {
 
   clearAuditLog(userId: string): void {
     this.auditLogByUser.set(userId, []);
+    this.persist("auditLog clear", () => dbClearAuditLog(userId));
   }
 
   // ---- Admin Methods ----
@@ -1411,6 +1696,127 @@ export class MemStorage implements IStorage {
     return user;
   }
 
+  // ---- Team Methods ----
+  createTeam(ownerId: string, data: InsertTeam): Team {
+    const id = randomUUID();
+    const slug = data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const team: Team = {
+      id,
+      name: data.name,
+      slug,
+      ownerId,
+      subscriptionId: null,
+      createdAt: new Date().toISOString(),
+    };
+    this.teams.set(id, team);
+    // Add owner as a member
+    const memberId = randomUUID();
+    const member: TeamMember = {
+      id: memberId,
+      teamId: id,
+      userId: ownerId,
+      role: "owner",
+      invitedBy: ownerId,
+      joinedAt: new Date().toISOString(),
+    };
+    this.teamMembers.set(memberId, member);
+    // Update owner's teamId
+    const owner = this.users.get(ownerId);
+    if (owner) {
+      owner.teamId = id;
+      this.persistUserToDb(owner);
+    }
+    return team;
+  }
+
+  getTeam(teamId: string): Team | undefined {
+    return this.teams.get(teamId);
+  }
+
+  getTeamByOwner(ownerId: string): Team | undefined {
+    return Array.from(this.teams.values()).find(t => t.ownerId === ownerId);
+  }
+
+  getTeamMembers(teamId: string): TeamMember[] {
+    return Array.from(this.teamMembers.values()).filter(m => m.teamId === teamId);
+  }
+
+  getTeamMember(teamId: string, userId: string): TeamMember | undefined {
+    return Array.from(this.teamMembers.values()).find(m => m.teamId === teamId && m.userId === userId);
+  }
+
+  addTeamMember(teamId: string, userId: string, role: TeamRole, invitedBy: string): TeamMember {
+    const id = randomUUID();
+    const member: TeamMember = {
+      id,
+      teamId,
+      userId,
+      role,
+      invitedBy,
+      joinedAt: new Date().toISOString(),
+    };
+    this.teamMembers.set(id, member);
+    const user = this.users.get(userId);
+    if (user) {
+      user.teamId = teamId;
+      this.persistUserToDb(user);
+    }
+    return member;
+  }
+
+  removeTeamMember(teamId: string, memberId: string): boolean {
+    const member = this.teamMembers.get(memberId);
+    if (!member || member.teamId !== teamId) return false;
+    this.teamMembers.delete(memberId);
+    const user = this.users.get(member.userId);
+    if (user) {
+      user.teamId = null;
+      this.persistUserToDb(user);
+    }
+    return true;
+  }
+
+  createTeamInvite(teamId: string, email: string, role: TeamRole, invitedBy: string): TeamInvite {
+    const id = randomUUID();
+    const invite: TeamInvite = {
+      id,
+      teamId,
+      email,
+      role,
+      invitedBy,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      acceptedAt: null,
+    };
+    this.teamInvites.set(id, invite);
+    return invite;
+  }
+
+  getTeamInvitesByEmail(email: string): TeamInvite[] {
+    return Array.from(this.teamInvites.values()).filter(
+      i => i.email === email && i.acceptedAt === null && new Date(i.expiresAt) > new Date()
+    );
+  }
+
+  getTeamInvite(inviteId: string): TeamInvite | undefined {
+    return this.teamInvites.get(inviteId);
+  }
+
+  getTeamInvitesByTeam(teamId: string): TeamInvite[] {
+    return Array.from(this.teamInvites.values()).filter(i => i.teamId === teamId);
+  }
+
+  acceptInvite(inviteId: string): TeamInvite | undefined {
+    const invite = this.teamInvites.get(inviteId);
+    if (!invite) return undefined;
+    invite.acceptedAt = new Date().toISOString();
+    return invite;
+  }
+
+  declineInvite(inviteId: string): boolean {
+    return this.teamInvites.delete(inviteId);
+  }
+
+  // ---- Admin Methods ----
   getAdminStats(): { totalUsers: number; tierBreakdown: Record<string, number>; suspendedCount: number; recentSignups: number } {
     const users = Array.from(this.users.values());
     const tierBreakdown: Record<string, number> = { free: 0, pro: 0, team: 0, enterprise: 0 };

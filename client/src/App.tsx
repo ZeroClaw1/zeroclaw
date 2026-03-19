@@ -24,6 +24,7 @@ import MarketplacePage from "@/pages/marketplace";
 import ContextPage from "@/pages/context";
 import ClaudeCodePage from "@/pages/claude-code";
 import AuditLogPage from "@/pages/audit-log";
+import TeamsPage from "@/pages/teams";
 import AdminOverviewPage from "@/pages/admin/admin-overview";
 import AdminUsersPage from "@/pages/admin/admin-users";
 import AdminSubscriptionsPage from "@/pages/admin/admin-subscriptions";
@@ -57,6 +58,7 @@ function AppRouter() {
       <Route path="/context" component={ContextPage} />
       <Route path="/claude-code" component={ClaudeCodePage} />
       <Route path="/audit-log" component={AuditLogPage} />
+      <Route path="/teams" component={TeamsPage} />
       <Route path="/admin/users">{() => <AdminRoute component={AdminUsersPage} />}</Route>
       <Route path="/admin/subscriptions">{() => <AdminRoute component={AdminSubscriptionsPage} />}</Route>
       <Route path="/admin">{() => <AdminRoute component={AdminOverviewPage} />}</Route>

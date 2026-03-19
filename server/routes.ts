@@ -11,6 +11,8 @@ import { pool } from "./db";
 import { saveResetToken, validateResetToken, markResetTokenUsed } from "./db";
 import { storage } from "./storage";
 import { rateLimitMiddleware, checkTierLimit } from "./rate-limit";
+import { checkUsageLimit } from "./metering";
+import { sendPasswordResetEmail } from "./email";
 import { setBroadcast, executePipeline, cancelPipelineExecution, rerunPipeline } from "./engine";
 import { openclawBridge } from "./openclaw-bridge";
 import {
@@ -32,6 +34,8 @@ import {
   updateClaudeCodeConfigSchema,
   submitCodingTaskSchema,
   PRICING_TIERS,
+  insertTeamSchema,
+  inviteTeamMemberSchema,
 } from "@shared/schema";
 
 // Session type augmentation
@@ -347,10 +351,12 @@ export async function registerRoutes(
 
         await saveResetToken(tokenId, user.id, tokenHash, expiresAt);
 
-        // In production, this would send an email. For now, log and return the token.
-        console.log(`[auth] Password reset token for ${email}: ${rawToken}`);
-        // Return the token in the response for now (no email service yet)
-        return res.json({ message: "Password reset token generated", resetToken: rawToken });
+        // Build the reset URL and send a real email via the email service
+        const appUrl = process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
+        const resetUrl = `${appUrl}/reset-password?token=${rawToken}`;
+        await sendPasswordResetEmail(email, resetUrl);
+
+        return res.json({ message: "If an account exists with that email, a reset link has been sent" });
       }
 
       res.json({ message: "If an account exists with that email, a reset link has been generated" });
@@ -455,10 +461,10 @@ export async function registerRoutes(
 
   app.post("/api/pipelines", (req, res) => {
     const userId = req.session.userId!;
-    // Check tier limit
-    const limitCheck = checkTierLimit(userId, "pipelines", storage.getPipelines(userId).length);
+    // Check tier limit via metering
+    const limitCheck = checkUsageLimit(userId, "pipelines", storage);
     if (!limitCheck.allowed) {
-      return res.status(403).json({ error: limitCheck.message, tier: limitCheck.tier, limit: limitCheck.limit });
+      return res.status(403).json({ error: "Plan limit reached", current: limitCheck.current, limit: limitCheck.limit, tier: limitCheck.tierName });
     }
     const parsed = insertPipelineSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -519,10 +525,10 @@ export async function registerRoutes(
 
   app.post("/api/agents", (req, res) => {
     const userId = req.session.userId!;
-    // Check tier limit
-    const limitCheck = checkTierLimit(userId, "agents", storage.getAgents(userId).length);
+    // Check tier limit via metering
+    const limitCheck = checkUsageLimit(userId, "agents", storage);
     if (!limitCheck.allowed) {
-      return res.status(403).json({ error: limitCheck.message, tier: limitCheck.tier, limit: limitCheck.limit });
+      return res.status(403).json({ error: "Plan limit reached", current: limitCheck.current, limit: limitCheck.limit, tier: limitCheck.tierName });
     }
     const parsed = insertAgentSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -577,10 +583,10 @@ export async function registerRoutes(
 
   app.post("/api/workflows", (req, res) => {
     const userId = req.session.userId!;
-    // Check tier limit
-    const limitCheck = checkTierLimit(userId, "workflows", storage.getWorkflows(userId).length);
+    // Check tier limit via metering
+    const limitCheck = checkUsageLimit(userId, "workflows", storage);
     if (!limitCheck.allowed) {
-      return res.status(403).json({ error: limitCheck.message, tier: limitCheck.tier, limit: limitCheck.limit });
+      return res.status(403).json({ error: "Plan limit reached", current: limitCheck.current, limit: limitCheck.limit, tier: limitCheck.tierName });
     }
     const parsed = insertWorkflowSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1651,6 +1657,11 @@ export async function registerRoutes(
 
   app.post("/api/claude-code/tasks", async (req, res) => {
     const userId = req.session.userId!;
+    // Check monthly task limit via metering
+    const taskLimitCheck = checkUsageLimit(userId, "claude_code_tasks", storage);
+    if (!taskLimitCheck.allowed) {
+      return res.status(403).json({ error: "Plan limit reached", current: taskLimitCheck.current, limit: taskLimitCheck.limit, tier: taskLimitCheck.tierName });
+    }
     const parsed = submitCodingTaskSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -1968,6 +1979,145 @@ export async function registerRoutes(
       tierRevenue[tier.id] = { count, revenue: count * Math.max(tier.price, 0) };
     }
     res.json({ mrr, arr: mrr * 12, tierRevenue });
+  });
+
+  // ---- Team Routes ----
+
+  // POST /api/teams — create team
+  app.post("/api/teams", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const parsed = insertTeamSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    // Check if user already has a team
+    const existing = storage.getTeamByOwner(userId);
+    if (existing) return res.status(409).json({ error: "You already own a team" });
+    const team = storage.createTeam(userId, parsed.data);
+    res.status(201).json(team);
+  });
+
+  // GET /api/teams/mine — get current user's team
+  app.get("/api/teams/mine", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    // Find team by ownership or membership
+    let team = storage.getTeamByOwner(userId);
+    if (!team && user.teamId) {
+      team = storage.getTeam(user.teamId);
+    }
+    if (!team) return res.status(404).json({ error: "No team found" });
+    const members = storage.getTeamMembers(team.id);
+    // Enrich members with user info
+    const enriched = members.map(m => {
+      const u = storage.getUserById(m.userId);
+      return { ...m, email: u?.email, username: u?.username };
+    });
+    res.json({ team, members: enriched });
+  });
+
+  // GET /api/teams/:id — get team details
+  app.get("/api/teams/:id", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const team = storage.getTeam(req.params.id);
+    if (!team) return res.status(404).json({ error: "Team not found" });
+    // Must be a member or owner
+    const member = storage.getTeamMember(team.id, userId);
+    if (!member && team.ownerId !== userId) return res.status(403).json({ error: "Forbidden" });
+    const members = storage.getTeamMembers(team.id);
+    const enriched = members.map(m => {
+      const u = storage.getUserById(m.userId);
+      return { ...m, email: u?.email, username: u?.username };
+    });
+    res.json({ team, members: enriched });
+  });
+
+  // POST /api/teams/:id/invite — invite a member
+  app.post("/api/teams/:id/invite", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const team = storage.getTeam(req.params.id);
+    if (!team) return res.status(404).json({ error: "Team not found" });
+    // Must be owner or admin
+    const member = storage.getTeamMember(team.id, userId);
+    const isOwner = team.ownerId === userId;
+    const isAdmin = member?.role === "admin";
+    if (!isOwner && !isAdmin) return res.status(403).json({ error: "Forbidden: only owners and admins can invite" });
+    const parsed = inviteTeamMemberSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const invite = storage.createTeamInvite(team.id, parsed.data.email, parsed.data.role, userId);
+    res.status(201).json(invite);
+  });
+
+  // GET /api/teams/:id/members — list team members
+  app.get("/api/teams/:id/members", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const team = storage.getTeam(req.params.id);
+    if (!team) return res.status(404).json({ error: "Team not found" });
+    const member = storage.getTeamMember(team.id, userId);
+    if (!member && team.ownerId !== userId) return res.status(403).json({ error: "Forbidden" });
+    const members = storage.getTeamMembers(team.id);
+    const enriched = members.map(m => {
+      const u = storage.getUserById(m.userId);
+      return { ...m, email: u?.email, username: u?.username };
+    });
+    res.json(enriched);
+  });
+
+  // DELETE /api/teams/:id/members/:memberId — remove member
+  app.delete("/api/teams/:id/members/:memberId", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const team = storage.getTeam(req.params.id);
+    if (!team) return res.status(404).json({ error: "Team not found" });
+    const requestingMember = storage.getTeamMember(team.id, userId);
+    const isOwner = team.ownerId === userId;
+    const isAdmin = requestingMember?.role === "admin";
+    if (!isOwner && !isAdmin) return res.status(403).json({ error: "Forbidden" });
+    const ok = storage.removeTeamMember(team.id, req.params.memberId);
+    if (!ok) return res.status(404).json({ error: "Member not found" });
+    res.json({ success: true });
+  });
+
+  // GET /api/teams/invites — pending invites for current user
+  app.get("/api/teams/invites", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const invites = storage.getTeamInvitesByEmail(user.email);
+    // Enrich with team names
+    const enriched = invites.map(inv => {
+      const team = storage.getTeam(inv.teamId);
+      return { ...inv, teamName: team?.name };
+    });
+    res.json(enriched);
+  });
+
+  // POST /api/teams/invites/:id/accept — accept invite
+  app.post("/api/teams/invites/:id/accept", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const invite = storage.getTeamInvite(req.params.id);
+    if (!invite) return res.status(404).json({ error: "Invite not found" });
+    if (invite.email !== user.email) return res.status(403).json({ error: "This invite is not for you" });
+    if (invite.acceptedAt) return res.status(409).json({ error: "Invite already accepted" });
+    if (new Date(invite.expiresAt) < new Date()) return res.status(410).json({ error: "Invite expired" });
+    // Mark accepted and add as member
+    storage.acceptInvite(invite.id);
+    storage.addTeamMember(invite.teamId, userId, invite.role, invite.invitedBy);
+    res.json({ success: true });
+  });
+
+  // POST /api/teams/invites/:id/decline — decline invite
+  app.post("/api/teams/invites/:id/decline", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const user = storage.getUserById(userId);
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    const invite = storage.getTeamInvite(req.params.id);
+    if (!invite) return res.status(404).json({ error: "Invite not found" });
+    if (invite.email !== user.email) return res.status(403).json({ error: "This invite is not for you" });
+    storage.declineInvite(invite.id);
+    res.json({ success: true });
   });
 
   return httpServer;
