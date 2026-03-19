@@ -1579,13 +1579,31 @@ export async function registerRoutes(
   // ========================================
   // Claude Code Integration
   // ========================================
+  // Helper: mask secrets for display
+  function maskClaudeConfig(config: any) {
+    return {
+      ...config,
+      apiKey: config.apiKey ? "sk-ant-•••" + config.apiKey.slice(-4) : "",
+      oauthToken: config.oauthToken ? "oauth-•••" + config.oauthToken.slice(-4) : "",
+    };
+  }
+
+  // Helper: resolve the active Anthropic credential from config
+  function getActiveCredential(config: any): { apiKey?: string; authToken?: string } | null {
+    if (config.authMethod === "oauth_token" && config.oauthToken) {
+      return { authToken: config.oauthToken };
+    }
+    if (config.apiKey) {
+      return { apiKey: config.apiKey };
+    }
+    return null;
+  }
+
   app.get("/api/claude-code/config", (req, res) => {
     const userId = req.session.userId!;
     const config = storage.getClaudeCodeConfig(userId);
     if (!config) return res.json(null);
-    // Mask API key for display
-    const masked = { ...config, apiKey: config.apiKey ? "sk-ant-•••" + config.apiKey.slice(-4) : "" };
-    res.json(masked);
+    res.json(maskClaudeConfig(config));
   });
 
   app.patch("/api/claude-code/config", (req, res) => {
@@ -1593,28 +1611,40 @@ export async function registerRoutes(
     const parsed = updateClaudeCodeConfigSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const config = storage.updateClaudeCodeConfig(userId, parsed.data);
-    // Mask API key for display
-    const masked = { ...config, apiKey: config.apiKey ? "sk-ant-•••" + config.apiKey.slice(-4) : "" };
-    res.json(masked);
+    res.json(maskClaudeConfig(config));
   });
 
   app.post("/api/claude-code/test", async (req, res) => {
     const userId = req.session.userId!;
     const config = storage.getClaudeCodeConfigRaw(userId);
-    if (!config || !config.apiKey) {
-      return res.json({ success: false, message: "No API key configured" });
+    if (!config) {
+      return res.json({ success: false, message: "No credentials configured" });
+    }
+    const cred = getActiveCredential(config);
+    if (!cred) {
+      const label = config.authMethod === "oauth_token" ? "OAuth token" : "API key";
+      return res.json({ success: false, message: `No ${label} configured` });
     }
     try {
-      const client = new Anthropic({ apiKey: config.apiKey });
+      const clientOpts: any = {};
+      if (cred.authToken) {
+        // OAuth tokens use the Authorization header directly
+        clientOpts.apiKey = "placeholder";
+        clientOpts.defaultHeaders = { Authorization: `Bearer ${cred.authToken}` };
+      } else {
+        clientOpts.apiKey = cred.apiKey;
+      }
+      const client = new Anthropic(clientOpts);
       await client.messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1,
         messages: [{ role: "user", content: "ping" }],
       });
       storage.updateClaudeCodeConfig(userId, {});
-      res.json({ success: true, message: "API key is valid. Connected to Anthropic API." });
+      const label = config.authMethod === "oauth_token" ? "OAuth token" : "API key";
+      res.json({ success: true, message: `${label} is valid. Connected to Anthropic API.` });
     } catch (err: any) {
-      const msg = err?.status === 401 ? "Invalid API key" : (err?.message || "Connection failed");
+      const msg = err?.status === 401 ? "Invalid credential" : (err?.message || "Connection failed");
       res.json({ success: false, message: msg });
     }
   });
@@ -1625,8 +1655,13 @@ export async function registerRoutes(
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
     const config = storage.getClaudeCodeConfigRaw(userId);
-    if (!config || !config.apiKey) {
-      return res.status(400).json({ error: "Claude Code API key not configured" });
+    if (!config) {
+      return res.status(400).json({ error: "Claude Code not configured" });
+    }
+    const cred = getActiveCredential(config);
+    if (!cred) {
+      const label = config.authMethod === "oauth_token" ? "OAuth token" : "API key";
+      return res.status(400).json({ error: `Claude Code ${label} not configured` });
     }
 
     // Create the task record in storage (queued)
@@ -1665,7 +1700,14 @@ export async function registerRoutes(
     storage.updateCodingTask(userId, task.id, { status: "running" });
 
     try {
-      const client = new Anthropic({ apiKey: config.apiKey });
+      const clientOpts: any = {};
+      if (cred.authToken) {
+        clientOpts.apiKey = "placeholder";
+        clientOpts.defaultHeaders = { Authorization: `Bearer ${cred.authToken}` };
+      } else {
+        clientOpts.apiKey = cred.apiKey;
+      }
+      const client = new Anthropic(clientOpts);
 
       const systemPrompt = [
         "You are Claude Code, an AI programming assistant integrated into ZeroClaw.",

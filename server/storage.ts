@@ -1234,7 +1234,9 @@ export class MemStorage implements IStorage {
     if (!config) {
       config = {
         id: `cc-${randomUUID().slice(0, 8)}`,
+        authMethod: "api_key",
         apiKey: "",
+        oauthToken: "",
         model: "claude-sonnet-4-20250514",
         maxTokens: 8192,
         status: "disconnected",
@@ -1247,9 +1249,19 @@ export class MemStorage implements IStorage {
       };
       this.claudeCodeConfigs.set(userId, config);
     }
+    if (data.authMethod !== undefined) config.authMethod = data.authMethod;
     if (data.apiKey !== undefined) {
       config.apiKey = data.apiKey;
-      config.status = data.apiKey ? "connected" : "disconnected";
+      // Update status based on active auth method
+      if (config.authMethod === "api_key") {
+        config.status = data.apiKey ? "connected" : "disconnected";
+      }
+    }
+    if (data.oauthToken !== undefined) {
+      config.oauthToken = data.oauthToken;
+      if (config.authMethod === "oauth_token") {
+        config.status = data.oauthToken ? "connected" : "disconnected";
+      }
     }
     if (data.model !== undefined) config.model = data.model;
     if (data.maxTokens !== undefined) config.maxTokens = data.maxTokens;

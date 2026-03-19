@@ -28,7 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { ClaudeCodeConfig, CodingTask } from "@shared/schema";
+import type { ClaudeCodeConfig, CodingTask, ClaudeAuthMethod } from "@shared/schema";
 import {
   Code2,
   Settings2,
@@ -45,6 +45,10 @@ import {
   ChevronDown,
   ChevronUp,
   Terminal,
+  Key,
+  Shield,
+  Info,
+  ExternalLink,
 } from "lucide-react";
 
 const AVAILABLE_TOOLS = ["Read", "Edit", "Bash", "Write", "Grep", "Glob", "WebFetch"];
@@ -73,7 +77,9 @@ function ConfigTab() {
   const { toast } = useToast();
   const [showKey, setShowKey] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [oauthTokenInput, setOauthTokenInput] = useState("");
   const [hasEditedKey, setHasEditedKey] = useState(false);
+  const [hasEditedToken, setHasEditedToken] = useState(false);
 
   const { data: config, isLoading } = useQuery<ClaudeCodeConfig | null>({
     queryKey: ["/api/claude-code/config"],
@@ -144,58 +150,186 @@ function ConfigTab() {
         </CardContent>
       </Card>
 
-      {/* API Key */}
+      {/* Auth Method Selector */}
       <Card className="border-border/50 bg-card/50">
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-mono">API Key</CardTitle>
+          <CardTitle className="text-sm font-mono">Authentication Method</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Input
-                type={showKey ? "text" : "password"}
-                placeholder="sk-ant-api03-..."
-                value={hasEditedKey ? apiKeyInput : (config?.apiKey ?? "")}
-                onChange={(e) => { setApiKeyInput(e.target.value); setHasEditedKey(true); }}
-                className="font-mono text-xs pr-10 bg-background/50"
-                data-testid="claude-code-api-key-input"
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
-                onClick={() => setShowKey(!showKey)}
-                data-testid="claude-code-toggle-key-visibility"
-              >
-                {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              </Button>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-xs font-mono"
-              disabled={!hasEditedKey || !apiKeyInput || updateConfig.isPending}
-              onClick={() => {
-                updateConfig.mutate({ apiKey: apiKeyInput });
-                setHasEditedKey(false);
-              }}
-              data-testid="claude-code-save-key"
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              className={`relative flex flex-col items-start gap-2 rounded-lg border p-4 transition-all ${
+                (config?.authMethod ?? "api_key") === "api_key"
+                  ? "border-primary/60 bg-primary/5 shadow-[0_0_12px_rgba(var(--primary),0.1)]"
+                  : "border-border/50 bg-card/30 hover:border-border"
+              }`}
+              onClick={() => updateConfig.mutate({ authMethod: "api_key" })}
+              data-testid="claude-code-auth-api-key"
             >
-              {updateConfig.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-xs font-mono"
-              disabled={testConnection.isPending || !config?.apiKey}
-              onClick={() => testConnection.mutate()}
-              data-testid="claude-code-test-connection"
+              <div className="flex items-center gap-2">
+                <Key className="h-4 w-4 text-primary" />
+                <span className="text-xs font-mono font-medium">API Key</span>
+                <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-emerald-500/40 text-emerald-400">Recommended</Badge>
+              </div>
+              <p className="text-[10px] font-mono text-muted-foreground leading-relaxed">
+                Pay-as-you-go via console.anthropic.com. Works with all third-party tools.
+              </p>
+            </button>
+            <button
+              className={`relative flex flex-col items-start gap-2 rounded-lg border p-4 transition-all ${
+                config?.authMethod === "oauth_token"
+                  ? "border-primary/60 bg-primary/5 shadow-[0_0_12px_rgba(var(--primary),0.1)]"
+                  : "border-border/50 bg-card/30 hover:border-border"
+              }`}
+              onClick={() => updateConfig.mutate({ authMethod: "oauth_token" })}
+              data-testid="claude-code-auth-oauth"
             >
-              {testConnection.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test Connection"}
-            </Button>
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-purple-400" />
+                <span className="text-xs font-mono font-medium">OAuth Token</span>
+                <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-amber-500/40 text-amber-400">Pro/Max</Badge>
+              </div>
+              <p className="text-[10px] font-mono text-muted-foreground leading-relaxed">
+                Use your Pro/Max plan subscription token. May have usage limits.
+              </p>
+            </button>
           </div>
         </CardContent>
       </Card>
+
+      {/* Credential Input — API Key */}
+      {(config?.authMethod ?? "api_key") === "api_key" && (
+        <Card className="border-border/50 bg-card/50">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-mono flex items-center gap-2">
+              <Key className="h-3.5 w-3.5 text-primary" />
+              API Key
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showKey ? "text" : "password"}
+                  placeholder="sk-ant-api03-..."
+                  value={hasEditedKey ? apiKeyInput : (config?.apiKey ?? "")}
+                  onChange={(e) => { setApiKeyInput(e.target.value); setHasEditedKey(true); }}
+                  className="font-mono text-xs pr-10 bg-background/50"
+                  data-testid="claude-code-api-key-input"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+                  onClick={() => setShowKey(!showKey)}
+                  data-testid="claude-code-toggle-key-visibility"
+                >
+                  {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs font-mono"
+                disabled={!hasEditedKey || !apiKeyInput || updateConfig.isPending}
+                onClick={() => {
+                  updateConfig.mutate({ apiKey: apiKeyInput });
+                  setHasEditedKey(false);
+                }}
+                data-testid="claude-code-save-key"
+              >
+                {updateConfig.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs font-mono"
+                disabled={testConnection.isPending || !config?.apiKey}
+                onClick={() => testConnection.mutate()}
+                data-testid="claude-code-test-connection"
+              >
+                {testConnection.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
+              </Button>
+            </div>
+            <p className="text-[10px] font-mono text-muted-foreground flex items-start gap-1.5">
+              <Info className="h-3 w-3 mt-0.5 shrink-0 text-muted-foreground/60" />
+              <span>Get your API key from{" "}
+                <a
+                  href="https://console.anthropic.com/settings/keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline inline-flex items-center gap-0.5"
+                >
+                  console.anthropic.com<ExternalLink className="h-2.5 w-2.5" />
+                </a>. You pay per token used.
+              </span>
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Credential Input — OAuth Token */}
+      {config?.authMethod === "oauth_token" && (
+        <Card className="border-border/50 bg-card/50">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-mono flex items-center gap-2">
+              <Shield className="h-3.5 w-3.5 text-purple-400" />
+              OAuth Token
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showKey ? "text" : "password"}
+                  placeholder="CLAUDE_CODE_OAUTH_TOKEN..."
+                  value={hasEditedToken ? oauthTokenInput : (config?.oauthToken ?? "")}
+                  onChange={(e) => { setOauthTokenInput(e.target.value); setHasEditedToken(true); }}
+                  className="font-mono text-xs pr-10 bg-background/50"
+                  data-testid="claude-code-oauth-token-input"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+                  onClick={() => setShowKey(!showKey)}
+                  data-testid="claude-code-toggle-token-visibility"
+                >
+                  {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </Button>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs font-mono"
+                disabled={!hasEditedToken || !oauthTokenInput || updateConfig.isPending}
+                onClick={() => {
+                  updateConfig.mutate({ oauthToken: oauthTokenInput });
+                  setHasEditedToken(false);
+                }}
+                data-testid="claude-code-save-token"
+              >
+                {updateConfig.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs font-mono"
+                disabled={testConnection.isPending || !config?.oauthToken}
+                onClick={() => testConnection.mutate()}
+                data-testid="claude-code-test-oauth-connection"
+              >
+                {testConnection.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
+              </Button>
+            </div>
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <p className="text-[10px] font-mono text-amber-400/90 leading-relaxed">
+                <span className="font-bold">Note:</span> OAuth tokens from Pro/Max plans use your subscription's included usage instead of pay-per-token billing. Usage is shared across Claude web, Claude Code CLI, and ZeroClaw. Token can be found in your Claude Code CLI config or exported as CLAUDE_CODE_OAUTH_TOKEN.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Model & Token Settings */}
       <Card className="border-border/50 bg-card/50">

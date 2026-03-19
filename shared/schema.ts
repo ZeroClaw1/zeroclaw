@@ -687,10 +687,13 @@ export interface ContextSession {
 // ---- Claude Code Integration ----
 export type ClaudeCodeStatus = "connected" | "disconnected" | "error";
 export type CodingTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ClaudeAuthMethod = "api_key" | "oauth_token";
 
 export interface ClaudeCodeConfig {
   id: string;
+  authMethod: ClaudeAuthMethod;
   apiKey: string;
+  oauthToken: string;
   model: string;
   maxTokens: number;
   status: ClaudeCodeStatus;
@@ -717,7 +720,9 @@ export interface CodingTask {
 }
 
 export const updateClaudeCodeConfigSchema = z.object({
+  authMethod: z.enum(["api_key", "oauth_token"]).optional(),
   apiKey: z.string().optional(),
+  oauthToken: z.string().optional(),
   model: z.string().optional(),
   maxTokens: z.number().min(256).max(128000).optional(),
   useObsidianContext: z.boolean().optional(),
