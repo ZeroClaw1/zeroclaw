@@ -5,7 +5,9 @@
  */
 import { Resend } from "resend";
 
-const FROM_ADDRESS = process.env.SMTP_FROM || "noreply@zeroclaw.ca";
+// Resend supports friendly name format: "ZeroClaw <noreply@zeroclaw.ca>"
+const RAW_FROM = process.env.SMTP_FROM || "noreply@zeroclaw.ca";
+const FROM_ADDRESS = RAW_FROM.includes("<") ? RAW_FROM : `ZeroClaw <${RAW_FROM}>`;
 
 // Use RESEND_API_KEY if set, otherwise fall back to SMTP_PASS (same key)
 const API_KEY = process.env.RESEND_API_KEY || process.env.SMTP_PASS;
