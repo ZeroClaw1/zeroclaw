@@ -106,7 +106,15 @@ export default function AuthPage() {
         setResetTokenInput(data.resetToken);
       }
     } catch (err: any) {
-      setForgotError(err.message || "Failed to process request");
+      // Strip status code prefix and truncate to avoid UI overflow
+      const raw = (err.message || "Failed to process request").replace(/^\d+:\s*/, "");
+      // Try to parse JSON error body from apiRequest
+      try {
+        const parsed = JSON.parse(raw);
+        setForgotError(parsed.error || parsed.message || raw.slice(0, 150));
+      } catch {
+        setForgotError(raw.length > 150 ? raw.slice(0, 150) + "…" : raw);
+      }
     } finally {
       setForgotLoading(false);
     }
@@ -214,7 +222,7 @@ export default function AuthPage() {
                       />
                     </div>
                     {displayLoginError && (
-                      <p className="text-xs text-destructive" data-testid="login-error">
+                      <p className="text-xs text-destructive break-words overflow-hidden max-w-full" data-testid="login-error">
                         {displayLoginError}
                       </p>
                     )}
@@ -301,7 +309,7 @@ export default function AuthPage() {
                       )}
                     </div>
                     {displayRegError && (
-                      <p className="text-xs text-destructive" data-testid="register-error">
+                      <p className="text-xs text-destructive break-words overflow-hidden max-w-full" data-testid="register-error">
                         {displayRegError}
                       </p>
                     )}
@@ -370,7 +378,7 @@ export default function AuthPage() {
                         className="bg-background border-border focus:ring-primary"
                       />
                     </div>
-                    {forgotError && <p className="text-xs text-destructive" data-testid="forgot-error">{forgotError}</p>}
+                    {forgotError && <p className="text-xs text-destructive break-words overflow-hidden max-w-full" data-testid="forgot-error">{forgotError}</p>}
                     {forgotMessage && (
                       <div className="space-y-2">
                         <p className="text-xs text-emerald-400" data-testid="forgot-success">{forgotMessage}</p>
@@ -428,7 +436,7 @@ export default function AuthPage() {
                       />
                       {resetNewPassword.length > 0 && <PasswordStrengthMeter password={resetNewPassword} />}
                     </div>
-                    {resetError && <p className="text-xs text-destructive" data-testid="reset-error">{resetError}</p>}
+                    {resetError && <p className="text-xs text-destructive break-words overflow-hidden max-w-full" data-testid="reset-error">{resetError}</p>}
                     {resetMessage && <p className="text-xs text-emerald-400" data-testid="reset-success">{resetMessage}</p>}
                     <Button
                       type="submit"

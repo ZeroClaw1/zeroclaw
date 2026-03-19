@@ -5,38 +5,40 @@
  */
 import nodemailer, { type Transporter } from "nodemailer";
 
-// Lazily created transporter — only when SMTP is configured
-let _transporter: Transporter | null = null;
-
-function getTransporter(): Transporter | null {
-  if (!process.env.SMTP_HOST) return null;
-
-  if (!_transporter) {
-    _transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || "587", 10),
-      secure: parseInt(process.env.SMTP_PORT || "587", 10) === 465,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-    });
-  }
-
-  return _transporter;
-}
-
 const FROM_ADDRESS = process.env.SMTP_FROM || "noreply@zeroclaw.ca";
 
 /**
+ * Create a fresh transporter each time to avoid caching broken connections.
+ * Adds connection and greeting timeouts so Railway doesn't hang.
+ */
+function createTransporter(): Transporter | null {
+  if (!process.env.SMTP_HOST) return null;
+
+  const port = parseInt(process.env.SMTP_PORT || "587", 10);
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port,
+    secure: port === 465, // true for 465, false for 587 (STARTTLS)
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+    connectionTimeout: 10000, // 10s to connect
+    greetingTimeout: 10000,   // 10s for SMTP greeting
+    socketTimeout: 15000,     // 15s for socket inactivity
+  });
+}
+
+/**
  * Send an email. If no SMTP_HOST is configured, logs to console instead.
+ * Throws a short, user-friendly error message on failure (not raw stack).
  */
 export async function sendEmail(
   to: string,
   subject: string,
   html: string
 ): Promise<void> {
-  const transporter = getTransporter();
+  const transporter = createTransporter();
 
   if (!transporter) {
     // Graceful degradation — log to console in local dev
@@ -49,12 +51,26 @@ export async function sendEmail(
     return;
   }
 
-  await transporter.sendMail({
-    from: FROM_ADDRESS,
-    to,
-    subject,
-    html,
-  });
+  try {
+    await transporter.sendMail({
+      from: FROM_ADDRESS,
+      to,
+      subject,
+      html,
+    });
+  } catch (err: any) {
+    const code = err?.code || "UNKNOWN";
+    console.error(`[email] SMTP send failed (${code}):`, err.message || err);
+
+    // Throw a concise error the route handler can safely expose
+    if (code === "ETIMEDOUT" || code === "ESOCKET" || code === "ECONNECTION") {
+      throw new Error("Email service temporarily unavailable. Please try again later.");
+    }
+    if (code === "EAUTH") {
+      throw new Error("Email service authentication error. Please contact support.");
+    }
+    throw new Error("Failed to send email. Please try again later.");
+  }
 }
 
 /**

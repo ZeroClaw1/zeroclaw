@@ -351,8 +351,10 @@ export async function registerRoutes(
 
         await saveResetToken(tokenId, user.id, tokenHash, expiresAt);
 
-        // Build the reset URL and send a real email via the email service
-        const appUrl = process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
+        // Build the reset URL — prefer APP_URL env, fallback to request origin
+        const appUrl = process.env.APP_URL
+          || (req.headers.origin)
+          || `${req.protocol}://${req.get("host")}`;
         const resetUrl = `${appUrl}/reset-password?token=${rawToken}`;
         await sendPasswordResetEmail(email, resetUrl);
 
@@ -360,9 +362,13 @@ export async function registerRoutes(
       }
 
       res.json({ message: "If an account exists with that email, a reset link has been generated" });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Forgot password error:", err);
-      res.status(500).json({ error: "Internal server error" });
+      // Return the email service's user-friendly message if available, otherwise generic
+      const message = err?.message?.length < 120
+        ? err.message
+        : "Something went wrong. Please try again later.";
+      res.status(500).json({ error: message });
     }
   });
 
