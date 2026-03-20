@@ -311,6 +311,86 @@ export async function ensureTables() {
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       config JSONB NOT NULL DEFAULT '{}'
     );
+    -- Context windows (one per agent per user)
+    CREATE TABLE IF NOT EXISTS context_windows (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      agent_name TEXT NOT NULL,
+      max_tokens INTEGER NOT NULL DEFAULT 200000,
+      used_tokens INTEGER NOT NULL DEFAULT 0,
+      reserved_tokens INTEGER NOT NULL DEFAULT 15000,
+      health_status TEXT NOT NULL DEFAULT 'healthy',
+      compression_enabled BOOLEAN NOT NULL DEFAULT false,
+      auto_summarize_threshold INTEGER NOT NULL DEFAULT 80,
+      last_compressed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    -- Sub-agents (many per user)
+    CREATE TABLE IF NOT EXISTS sub_agents (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      parent_agent_id TEXT NOT NULL,
+      agent_name TEXT NOT NULL,
+      objective TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'spawning',
+      model TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      workspace_files JSONB NOT NULL DEFAULT '[]',
+      result TEXT,
+      error TEXT,
+      spawned_at TEXT NOT NULL,
+      completed_at TEXT,
+      duration INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- Workspace files (many per user)
+    CREATE TABLE IF NOT EXISTS workspace_files (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'data',
+      size INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL,
+      last_accessed_by TEXT NOT NULL,
+      access_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    -- Agent memory entries (many per user)
+    CREATE TABLE IF NOT EXISTS agent_memory (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      memory_type TEXT NOT NULL DEFAULT 'fact',
+      content TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      confidence NUMERIC NOT NULL DEFAULT 0.8,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      last_accessed TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT
+    );
+
+    -- Context handoffs (many per user)
+    CREATE TABLE IF NOT EXISTS context_handoffs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      from_agent_id TEXT NOT NULL,
+      to_agent_id TEXT NOT NULL,
+      handoff_type TEXT NOT NULL DEFAULT 'delegation',
+      tokens_before INTEGER NOT NULL DEFAULT 0,
+      tokens_after INTEGER NOT NULL DEFAULT 0,
+      tokens_saved INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL DEFAULT '',
+      success BOOLEAN NOT NULL DEFAULT true,
+      timestamp TEXT NOT NULL
+    );
   `);
 
   console.log("[db] Tables ensured");
@@ -1444,5 +1524,242 @@ export async function dbUpsertOpenClawConfig(userId: string, config: any): Promi
     `INSERT INTO openclaw_configs (user_id, config) VALUES ($1, $2)
      ON CONFLICT (user_id) DO UPDATE SET config = EXCLUDED.config`,
     [userId, JSON.stringify(config)]
+  );
+}
+
+// ---- Context Windows ----
+
+export async function dbGetContextWindows(userId: string): Promise<any[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT * FROM context_windows WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows.map((row: any) => ({
+    id: row.id,
+    agentId: row.agent_id,
+    agentName: row.agent_name,
+    maxTokens: row.max_tokens,
+    usedTokens: row.used_tokens,
+    reservedTokens: row.reserved_tokens,
+    healthStatus: row.health_status,
+    compressionEnabled: row.compression_enabled,
+    autoSummarizeThreshold: row.auto_summarize_threshold,
+    lastCompressedAt: row.last_compressed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function dbUpsertContextWindow(userId: string, cw: any): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO context_windows
+       (id, user_id, agent_id, agent_name, max_tokens, used_tokens, reserved_tokens, health_status, compression_enabled, auto_summarize_threshold, last_compressed_at, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (id) DO UPDATE SET
+       agent_name = EXCLUDED.agent_name,
+       max_tokens = EXCLUDED.max_tokens,
+       used_tokens = EXCLUDED.used_tokens,
+       reserved_tokens = EXCLUDED.reserved_tokens,
+       health_status = EXCLUDED.health_status,
+       compression_enabled = EXCLUDED.compression_enabled,
+       auto_summarize_threshold = EXCLUDED.auto_summarize_threshold,
+       last_compressed_at = EXCLUDED.last_compressed_at,
+       updated_at = EXCLUDED.updated_at`,
+    [
+      cw.id, userId, cw.agentId, cw.agentName, cw.maxTokens, cw.usedTokens,
+      cw.reservedTokens, cw.healthStatus, cw.compressionEnabled,
+      cw.autoSummarizeThreshold, cw.lastCompressedAt, cw.createdAt, cw.updatedAt,
+    ]
+  );
+}
+
+// ---- Sub-agents ----
+
+export async function dbGetSubAgents(userId: string): Promise<any[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT * FROM sub_agents WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows.map((row: any) => ({
+    id: row.id,
+    parentAgentId: row.parent_agent_id,
+    agentName: row.agent_name,
+    objective: row.objective,
+    status: row.status,
+    model: row.model,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    workspaceFiles: row.workspace_files,
+    result: row.result,
+    error: row.error,
+    spawnedAt: row.spawned_at,
+    completedAt: row.completed_at,
+    duration: row.duration,
+  }));
+}
+
+export async function dbUpsertSubAgent(userId: string, sa: any): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO sub_agents
+       (id, user_id, parent_agent_id, agent_name, objective, status, model, input_tokens, output_tokens, workspace_files, result, error, spawned_at, completed_at, duration)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     ON CONFLICT (id) DO UPDATE SET
+       agent_name = EXCLUDED.agent_name,
+       objective = EXCLUDED.objective,
+       status = EXCLUDED.status,
+       model = EXCLUDED.model,
+       input_tokens = EXCLUDED.input_tokens,
+       output_tokens = EXCLUDED.output_tokens,
+       workspace_files = EXCLUDED.workspace_files,
+       result = EXCLUDED.result,
+       error = EXCLUDED.error,
+       completed_at = EXCLUDED.completed_at,
+       duration = EXCLUDED.duration`,
+    [
+      sa.id, userId, sa.parentAgentId, sa.agentName, sa.objective, sa.status,
+      sa.model, sa.inputTokens, sa.outputTokens, JSON.stringify(sa.workspaceFiles),
+      sa.result, sa.error, sa.spawnedAt, sa.completedAt, sa.duration,
+    ]
+  );
+}
+
+export async function dbDeleteSubAgent(userId: string, subAgentId: string): Promise<void> {
+  if (!pool) return;
+  await pool.query(`DELETE FROM sub_agents WHERE id = $1 AND user_id = $2`, [subAgentId, userId]);
+}
+
+// ---- Workspace Files ----
+
+export async function dbGetWorkspaceFiles(userId: string): Promise<any[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT * FROM workspace_files WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows.map((row: any) => ({
+    id: row.id,
+    path: row.path,
+    name: row.name,
+    type: row.type,
+    size: row.size,
+    createdBy: row.created_by,
+    lastAccessedBy: row.last_accessed_by,
+    accessCount: row.access_count,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function dbUpsertWorkspaceFile(userId: string, wf: any): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO workspace_files
+       (id, user_id, path, name, type, size, created_by, last_accessed_by, access_count, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (id) DO UPDATE SET
+       path = EXCLUDED.path,
+       name = EXCLUDED.name,
+       type = EXCLUDED.type,
+       size = EXCLUDED.size,
+       last_accessed_by = EXCLUDED.last_accessed_by,
+       access_count = EXCLUDED.access_count,
+       updated_at = EXCLUDED.updated_at`,
+    [
+      wf.id, userId, wf.path, wf.name, wf.type, wf.size,
+      wf.createdBy, wf.lastAccessedBy, wf.accessCount, wf.createdAt, wf.updatedAt,
+    ]
+  );
+}
+
+export async function dbDeleteWorkspaceFile(userId: string, fileId: string): Promise<void> {
+  if (!pool) return;
+  await pool.query(`DELETE FROM workspace_files WHERE id = $1 AND user_id = $2`, [fileId, userId]);
+}
+
+// ---- Agent Memory ----
+
+export async function dbGetMemoryEntries(userId: string): Promise<any[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT * FROM agent_memory WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows.map((row: any) => ({
+    id: row.id,
+    agentId: row.agent_id,
+    memoryType: row.memory_type,
+    content: row.content,
+    source: row.source,
+    confidence: Number(row.confidence),
+    accessCount: row.access_count,
+    lastAccessed: row.last_accessed,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+  }));
+}
+
+export async function dbUpsertMemoryEntry(userId: string, me: any): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO agent_memory
+       (id, user_id, agent_id, memory_type, content, source, confidence, access_count, last_accessed, created_at, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (id) DO UPDATE SET
+       memory_type = EXCLUDED.memory_type,
+       content = EXCLUDED.content,
+       source = EXCLUDED.source,
+       confidence = EXCLUDED.confidence,
+       access_count = EXCLUDED.access_count,
+       last_accessed = EXCLUDED.last_accessed,
+       expires_at = EXCLUDED.expires_at`,
+    [
+      me.id, userId, me.agentId, me.memoryType, me.content, me.source,
+      me.confidence, me.accessCount, me.lastAccessed, me.createdAt, me.expiresAt,
+    ]
+  );
+}
+
+export async function dbDeleteMemoryEntry(userId: string, entryId: string): Promise<void> {
+  if (!pool) return;
+  await pool.query(`DELETE FROM agent_memory WHERE id = $1 AND user_id = $2`, [entryId, userId]);
+}
+
+// ---- Context Handoffs ----
+
+export async function dbGetHandoffs(userId: string): Promise<any[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT * FROM context_handoffs WHERE user_id = $1 ORDER BY timestamp DESC`,
+    [userId]
+  );
+  return result.rows.map((row: any) => ({
+    id: row.id,
+    fromAgentId: row.from_agent_id,
+    toAgentId: row.to_agent_id,
+    handoffType: row.handoff_type,
+    tokensBefore: row.tokens_before,
+    tokensAfter: row.tokens_after,
+    tokensSaved: row.tokens_saved,
+    payload: row.payload,
+    success: row.success,
+    timestamp: row.timestamp,
+  }));
+}
+
+export async function dbInsertHandoff(userId: string, h: any): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO context_handoffs
+       (id, user_id, from_agent_id, to_agent_id, handoff_type, tokens_before, tokens_after, tokens_saved, payload, success, timestamp)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (id) DO NOTHING`,
+    [
+      h.id, userId, h.fromAgentId, h.toAgentId, h.handoffType,
+      h.tokensBefore, h.tokensAfter, h.tokensSaved, h.payload, h.success, h.timestamp,
+    ]
   );
 }

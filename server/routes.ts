@@ -36,6 +36,10 @@ import {
   PRICING_TIERS,
   insertTeamSchema,
   inviteTeamMemberSchema,
+  spawnSubAgentSchema,
+  createWorkspaceFileSchema,
+  createMemoryEntrySchema,
+  updateContextWindowSchema,
 } from "@shared/schema";
 
 // Session type augmentation
@@ -2124,6 +2128,150 @@ export async function registerRoutes(
     if (invite.email !== user.email) return res.status(403).json({ error: "This invite is not for you" });
     storage.declineInvite(invite.id);
     res.json({ success: true });
+  });
+
+  // ---- Context Orchestration Routes ----
+
+  // GET /api/orchestrator/stats
+  app.get("/api/orchestrator/stats", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getOrchestrationStats(userId));
+  });
+
+  // GET /api/orchestrator/context-windows
+  app.get("/api/orchestrator/context-windows", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getContextWindows(userId));
+  });
+
+  // PATCH /api/orchestrator/context-windows/:id
+  app.patch("/api/orchestrator/context-windows/:id", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = updateContextWindowSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const updated = storage.updateContextWindow(userId, req.params.id as string, parsed.data);
+    if (!updated) return res.status(404).json({ error: "Context window not found" });
+    res.json(updated);
+  });
+
+  // GET /api/orchestrator/subagents
+  app.get("/api/orchestrator/subagents", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getSubAgents(userId));
+  });
+
+  // POST /api/orchestrator/subagents — spawn a subagent
+  app.post("/api/orchestrator/subagents", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = spawnSubAgentSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const subAgent = storage.spawnSubAgent(userId, parsed.data);
+    res.status(201).json(subAgent);
+
+    // Simulate execution lifecycle
+    const broadcast = (event: string, data: unknown) => {
+      const message = JSON.stringify({ event, data });
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) client.send(message);
+      });
+    };
+
+    // spawning → running (1s)
+    setTimeout(() => {
+      const running = storage.updateSubAgentStatus(userId, subAgent.id, "running");
+      if (running) broadcast("subagent:status", running);
+
+      // running → completed (5-15s)
+      const delay = 5000 + Math.random() * 10000;
+      setTimeout(() => {
+        const result = `Task completed successfully. Processed objective: "${parsed.data.objective.slice(0, 80)}${parsed.data.objective.length > 80 ? "..." : ""}". Results written to workspace.`;
+        const completed = storage.updateSubAgentStatus(userId, subAgent.id, "completed", result);
+        if (completed) broadcast("subagent:status", completed);
+      }, delay);
+    }, 1000);
+  });
+
+  // PATCH /api/orchestrator/subagents/:id/status
+  app.patch("/api/orchestrator/subagents/:id/status", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const { status, result, error } = req.body;
+    if (!status) return res.status(400).json({ error: "status is required" });
+    const updated = storage.updateSubAgentStatus(userId, req.params.id as string, status, result, error);
+    if (!updated) return res.status(404).json({ error: "SubAgent not found" });
+    res.json(updated);
+  });
+
+  // GET /api/orchestrator/workspace
+  app.get("/api/orchestrator/workspace", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getWorkspaceFiles(userId));
+  });
+
+  // POST /api/orchestrator/workspace
+  app.post("/api/orchestrator/workspace", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = createWorkspaceFileSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const file = storage.createWorkspaceFile(userId, parsed.data);
+    res.status(201).json(file);
+  });
+
+  // DELETE /api/orchestrator/workspace/:id
+  app.delete("/api/orchestrator/workspace/:id", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const ok = storage.deleteWorkspaceFile(userId, req.params.id as string);
+    if (!ok) return res.status(404).json({ error: "File not found" });
+    res.json({ success: true });
+  });
+
+  // GET /api/orchestrator/memory
+  app.get("/api/orchestrator/memory", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const agentId = req.query.agentId as string | undefined;
+    res.json(storage.getMemoryEntries(userId, agentId));
+  });
+
+  // POST /api/orchestrator/memory
+  app.post("/api/orchestrator/memory", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = createMemoryEntrySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+    const entry = storage.createMemoryEntry(userId, parsed.data);
+    res.status(201).json(entry);
+  });
+
+  // DELETE /api/orchestrator/memory/:id
+  app.delete("/api/orchestrator/memory/:id", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const ok = storage.deleteMemoryEntry(userId, req.params.id as string);
+    if (!ok) return res.status(404).json({ error: "Memory entry not found" });
+    res.json({ success: true });
+  });
+
+  // GET /api/orchestrator/handoffs
+  app.get("/api/orchestrator/handoffs", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    res.json(storage.getHandoffs(userId));
+  });
+
+  // POST /api/orchestrator/handoffs
+  app.post("/api/orchestrator/handoffs", requireAuth, (req, res) => {
+    const userId = req.session.userId!;
+    const { fromAgentId, toAgentId, handoffType, tokensBefore, tokensAfter, tokensSaved, payload, success } = req.body;
+    if (!fromAgentId || !toAgentId || !handoffType) {
+      return res.status(400).json({ error: "fromAgentId, toAgentId, and handoffType are required" });
+    }
+    const handoff = storage.createHandoff(userId, {
+      fromAgentId,
+      toAgentId,
+      handoffType,
+      tokensBefore: tokensBefore ?? 0,
+      tokensAfter: tokensAfter ?? 0,
+      tokensSaved: tokensSaved ?? 0,
+      payload: payload ?? "",
+      success: success ?? true,
+    });
+    res.status(201).json(handoff);
   });
 
   return httpServer;

@@ -45,7 +45,7 @@ const navItems = [
   { label: "Deployments", icon: Rocket, href: "/deployments" },
   { label: "Planning", icon: ClipboardList, href: "/planning" },
   { label: "OpenClaw", icon: Terminal, href: "/openclaw" },
-  { label: "Context", icon: Brain, href: "/context" },
+  { label: "Orchestrator", icon: Brain, href: "/context" },
   { label: "Claude Code", icon: Code2, href: "/claude-code" },
   { label: "Logs", icon: Terminal, href: "/logs" },
   { label: "GitHub", icon: Github, href: "/github" },
@@ -170,7 +170,7 @@ export function AppSidebar() {
                       {item.label === "OpenClaw" && (
                         <Zap className="h-3 w-3 ml-auto text-primary pulse-live" />
                       )}
-                      {item.label === "Context" && <VaultStatusDot />}
+                      {item.label === "Orchestrator" && <VaultStatusDot />}
                       {item.label === "Claude Code" && <ClaudeCodeStatusDot />}
                     </Link>
                   </SidebarMenuButton>

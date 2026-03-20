@@ -747,3 +747,132 @@ export const updateVaultConfigSchema = z.object({
   retrievalStrategy: z.enum(["zettelkasten", "recent", "relevant", "manual"]).optional(),
 });
 export type UpdateVaultConfig = z.infer<typeof updateVaultConfigSchema>;
+
+// ---- Context Orchestration System ----
+export type SubAgentStatus = "spawning" | "running" | "completed" | "failed" | "cancelled";
+export type ContextHealthStatus = "healthy" | "warning" | "critical" | "overflow";
+export type MemoryType = "fact" | "preference" | "project" | "conversation";
+export type HandoffType = "delegation" | "result" | "file_share" | "context_summary";
+
+// Tracks each agent's context window usage
+export interface ContextWindow {
+  id: string;
+  agentId: string;
+  agentName: string;
+  maxTokens: number;
+  usedTokens: number;
+  reservedTokens: number; // tokens reserved for system prompt + tools
+  healthStatus: ContextHealthStatus;
+  compressionEnabled: boolean;
+  autoSummarizeThreshold: number; // percentage (0-100) at which auto-summarize triggers
+  lastCompressedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// SubAgent spawned by a parent agent
+export interface SubAgent {
+  id: string;
+  parentAgentId: string;
+  agentName: string;
+  objective: string;
+  status: SubAgentStatus;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  workspaceFiles: string[]; // file paths this subagent has written
+  result: string | null; // summary returned to parent
+  error: string | null;
+  spawnedAt: string;
+  completedAt: string | null;
+  duration: number; // seconds
+}
+
+// Files in the shared workspace between agents
+export interface SharedWorkspaceFile {
+  id: string;
+  path: string;
+  name: string;
+  type: "data" | "config" | "result" | "intermediate" | "log";
+  size: number; // bytes
+  createdBy: string; // agent id
+  lastAccessedBy: string; // agent id
+  accessCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Persistent memory entries for agents
+export interface AgentMemoryEntry {
+  id: string;
+  agentId: string;
+  memoryType: MemoryType;
+  content: string;
+  source: string; // which conversation/task it came from
+  confidence: number; // 0-1
+  accessCount: number;
+  lastAccessed: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+// Handoff events between agents (parent <-> subagent communication)
+export interface ContextHandoff {
+  id: string;
+  fromAgentId: string;
+  toAgentId: string;
+  handoffType: HandoffType;
+  tokensBefore: number;
+  tokensAfter: number;
+  tokensSaved: number;
+  payload: string; // summary or file reference
+  success: boolean;
+  timestamp: string;
+}
+
+// Orchestration stats for the overview
+export interface OrchestrationStats {
+  totalSubAgentsSpawned: number;
+  activeSubAgents: number;
+  completedSubAgents: number;
+  failedSubAgents: number;
+  totalTokensUsed: number;
+  totalTokensSaved: number;
+  avgContextUtilization: number; // percentage
+  totalHandoffs: number;
+  totalWorkspaceFiles: number;
+  totalMemoryEntries: number;
+}
+
+export const spawnSubAgentSchema = z.object({
+  parentAgentId: z.string().min(1),
+  agentName: z.string().min(1),
+  objective: z.string().min(1),
+  model: z.string().default("claude-sonnet-4-6"),
+});
+export type SpawnSubAgent = z.infer<typeof spawnSubAgentSchema>;
+
+export const createWorkspaceFileSchema = z.object({
+  path: z.string().min(1),
+  name: z.string().min(1),
+  type: z.enum(["data", "config", "result", "intermediate", "log"]),
+  size: z.number().default(0),
+  createdBy: z.string().min(1),
+});
+export type CreateWorkspaceFile = z.infer<typeof createWorkspaceFileSchema>;
+
+export const createMemoryEntrySchema = z.object({
+  agentId: z.string().min(1),
+  memoryType: z.enum(["fact", "preference", "project", "conversation"]),
+  content: z.string().min(1),
+  source: z.string().default("manual"),
+  confidence: z.number().min(0).max(1).default(0.8),
+});
+export type CreateMemoryEntry = z.infer<typeof createMemoryEntrySchema>;
+
+export const updateContextWindowSchema = z.object({
+  maxTokens: z.number().min(1000).optional(),
+  compressionEnabled: z.boolean().optional(),
+  autoSummarizeThreshold: z.number().min(50).max(100).optional(),
+});
+export type UpdateContextWindow = z.infer<typeof updateContextWindowSchema>;

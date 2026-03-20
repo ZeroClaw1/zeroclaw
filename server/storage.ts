@@ -58,6 +58,19 @@ import {
   dbTrimActivityEvents,
   dbGetOpenClawConfig,
   dbUpsertOpenClawConfig,
+  dbGetContextWindows,
+  dbUpsertContextWindow,
+  dbGetSubAgents,
+  dbUpsertSubAgent,
+  dbDeleteSubAgent,
+  dbGetWorkspaceFiles,
+  dbUpsertWorkspaceFile,
+  dbDeleteWorkspaceFile,
+  dbGetMemoryEntries,
+  dbUpsertMemoryEntry,
+  dbDeleteMemoryEntry,
+  dbGetHandoffs,
+  dbInsertHandoff,
 } from "./db";
 import type {
   Pipeline, InsertPipeline, PipelineStep,
@@ -93,6 +106,17 @@ import type {
   TeamRole,
   InsertTeam,
   InviteTeamMember,
+  ContextWindow,
+  UpdateContextWindow,
+  SubAgent,
+  SubAgentStatus,
+  SpawnSubAgent,
+  SharedWorkspaceFile,
+  CreateWorkspaceFile,
+  AgentMemoryEntry,
+  CreateMemoryEntry,
+  ContextHandoff,
+  OrchestrationStats,
 } from "@shared/schema";
 
 // Internal type to attach userId to entities
@@ -242,6 +266,29 @@ export interface IStorage {
   acceptInvite(inviteId: string): TeamInvite | undefined;
   declineInvite(inviteId: string): boolean;
 
+  // Context Orchestration
+  getContextWindows(userId: string): ContextWindow[];
+  getContextWindow(userId: string, id: string): ContextWindow | undefined;
+  updateContextWindow(userId: string, id: string, data: UpdateContextWindow): ContextWindow | undefined;
+
+  getSubAgents(userId: string): SubAgent[];
+  getSubAgent(userId: string, id: string): SubAgent | undefined;
+  spawnSubAgent(userId: string, data: SpawnSubAgent): SubAgent;
+  updateSubAgentStatus(userId: string, id: string, status: SubAgentStatus, result?: string, error?: string): SubAgent | undefined;
+
+  getWorkspaceFiles(userId: string): SharedWorkspaceFile[];
+  createWorkspaceFile(userId: string, data: CreateWorkspaceFile): SharedWorkspaceFile;
+  deleteWorkspaceFile(userId: string, id: string): boolean;
+
+  getMemoryEntries(userId: string, agentId?: string): AgentMemoryEntry[];
+  createMemoryEntry(userId: string, data: CreateMemoryEntry): AgentMemoryEntry;
+  deleteMemoryEntry(userId: string, id: string): boolean;
+
+  getHandoffs(userId: string): ContextHandoff[];
+  createHandoff(userId: string, data: Omit<ContextHandoff, "id" | "timestamp">): ContextHandoff;
+
+  getOrchestrationStats(userId: string): OrchestrationStats;
+
   // Admin
   getAllUsers(): User[];
   updateUserTier(userId: string, tier: SubscriptionTier): User | undefined;
@@ -325,6 +372,15 @@ export class MemStorage implements IStorage {
   private teams: Map<string, Team> = new Map();
   private teamMembers: Map<string, TeamMember> = new Map();
   private teamInvites: Map<string, TeamInvite> = new Map();
+
+  // Context Orchestration data (per-user)
+  private contextWindows: Map<string, WithUserId<ContextWindow>> = new Map();
+  private subAgents: Map<string, WithUserId<SubAgent>> = new Map();
+  private workspaceFiles: Map<string, WithUserId<SharedWorkspaceFile>> = new Map();
+  private memoryEntries: Map<string, WithUserId<AgentMemoryEntry>> = new Map();
+  private handoffs: Map<string, WithUserId<ContextHandoff>> = new Map();
+  // Track which users have been seeded with orchestration data
+  private orchestrationSeeded: Set<string> = new Set();
 
   // Global data (no userId)
   private pipelineTemplates: PipelineTemplate[] = [];
@@ -493,6 +549,36 @@ export class MemStorage implements IStorage {
           if (css.length > 0) {
             this.contextSessions.set(userId, css);
           }
+
+          // Context windows
+          const cws = await dbGetContextWindows(userId);
+          for (const cw of cws) {
+            this.contextWindows.set(cw.id, { ...cw, _userId: userId });
+          }
+
+          // Sub-agents
+          const sas = await dbGetSubAgents(userId);
+          for (const sa of sas) {
+            this.subAgents.set(sa.id, { ...sa, _userId: userId });
+          }
+
+          // Workspace files
+          const wfs2 = await dbGetWorkspaceFiles(userId);
+          for (const wf of wfs2) {
+            this.workspaceFiles.set(wf.id, { ...wf, _userId: userId });
+          }
+
+          // Memory entries
+          const mes = await dbGetMemoryEntries(userId);
+          for (const me of mes) {
+            this.memoryEntries.set(me.id, { ...me, _userId: userId });
+          }
+
+          // Handoffs
+          const hoffs = await dbGetHandoffs(userId);
+          for (const h of hoffs) {
+            this.handoffs.set(h.id, { ...h, _userId: userId });
+          }
         } catch (err) {
           console.error(`[storage] Failed to load data for user ${userId}:`, err);
         }
@@ -515,6 +601,411 @@ export class MemStorage implements IStorage {
     fn().catch((err) => {
       console.error(`[storage] Failed to persist ${label}:`, err);
     });
+  }
+
+  private seedOrchestrationForUser(userId: string) {
+    if (this.orchestrationSeeded.has(userId)) return;
+    this.orchestrationSeeded.add(userId);
+
+    const now = new Date();
+    const ago = (minutes: number) => new Date(now.getTime() - minutes * 60 * 1000).toISOString();
+
+    const parentAgentId = "agent-orchestrator-01";
+    const researchAgentId = "sub-research-01";
+    const scrapeAgentId = "sub-scrape-02";
+    const analysisAgentId = "sub-analysis-03";
+    const activeAgentId = "sub-active-04";
+
+    // ---- Context Windows ----
+    const cwMain: ContextWindow = {
+      id: randomUUID(),
+      agentId: parentAgentId,
+      agentName: "Orchestrator Agent",
+      maxTokens: 200000,
+      usedTokens: 142850,
+      reservedTokens: 15000,
+      healthStatus: "warning",
+      compressionEnabled: true,
+      autoSummarizeThreshold: 80,
+      lastCompressedAt: ago(45),
+      createdAt: ago(180),
+      updatedAt: ago(5),
+    };
+    const cwResearch: ContextWindow = {
+      id: randomUUID(),
+      agentId: researchAgentId,
+      agentName: "Research SubAgent",
+      maxTokens: 100000,
+      usedTokens: 87340,
+      reservedTokens: 8000,
+      healthStatus: "critical",
+      compressionEnabled: true,
+      autoSummarizeThreshold: 75,
+      lastCompressedAt: ago(20),
+      createdAt: ago(90),
+      updatedAt: ago(2),
+    };
+    const cwAnalysis: ContextWindow = {
+      id: randomUUID(),
+      agentId: analysisAgentId,
+      agentName: "Analysis SubAgent",
+      maxTokens: 100000,
+      usedTokens: 34200,
+      reservedTokens: 8000,
+      healthStatus: "healthy",
+      compressionEnabled: false,
+      autoSummarizeThreshold: 85,
+      lastCompressedAt: null,
+      createdAt: ago(60),
+      updatedAt: ago(15),
+    };
+    const cwActive: ContextWindow = {
+      id: randomUUID(),
+      agentId: activeAgentId,
+      agentName: "Pricing Analyst SubAgent",
+      maxTokens: 100000,
+      usedTokens: 12400,
+      reservedTokens: 8000,
+      healthStatus: "healthy",
+      compressionEnabled: false,
+      autoSummarizeThreshold: 85,
+      lastCompressedAt: null,
+      createdAt: ago(3),
+      updatedAt: ago(1),
+    };
+    for (const cw of [cwMain, cwResearch, cwAnalysis, cwActive]) {
+      this.contextWindows.set(cw.id, { ...cw, _userId: userId });
+    }
+
+    // ---- Sub-agents ----
+    const saResearch: SubAgent = {
+      id: researchAgentId,
+      parentAgentId,
+      agentName: "Research SubAgent",
+      objective: "Research top 5 competitor products, their features, pricing, and market positioning. Write findings to workspace/research/competitors.json.",
+      status: "completed",
+      model: "claude-sonnet-4-6",
+      inputTokens: 54200,
+      outputTokens: 33140,
+      workspaceFiles: ["research/competitors.json", "research/competitor-summary.md"],
+      result: "Identified 5 key competitors: Temporal, Windmill, Prefect, Dagster, Airflow. Full details saved to research/competitors.json. Key insight: all competitors lack real-time agent context management — strong differentiator for ZeroClaw.",
+      error: null,
+      spawnedAt: ago(90),
+      completedAt: ago(35),
+      duration: 3300,
+    };
+    const saScrape: SubAgent = {
+      id: scrapeAgentId,
+      parentAgentId,
+      agentName: "Data Collection SubAgent",
+      objective: "Fetch pricing pages and feature matrices from competitor websites. Save structured data to workspace/research/pricing_data.json.",
+      status: "completed",
+      model: "claude-haiku-3-5",
+      inputTokens: 28900,
+      outputTokens: 18450,
+      workspaceFiles: ["research/pricing_data.json"],
+      result: "Collected pricing data from 5 competitor sites. Temporal: $0.10/exec, Windmill: free/cloud $10/mo, Prefect: free/$500/mo, Dagster: open-source/cloud $0.002/compute-min, Airflow: self-hosted only. Data in research/pricing_data.json.",
+      error: null,
+      spawnedAt: ago(85),
+      completedAt: ago(50),
+      duration: 2100,
+    };
+    const saAnalysis: SubAgent = {
+      id: analysisAgentId,
+      parentAgentId,
+      agentName: "Analysis SubAgent",
+      objective: "Synthesize competitor research into a SWOT analysis and strategic recommendations. Output to workspace/analysis/strategic_report.md.",
+      status: "completed",
+      model: "claude-opus-4-5",
+      inputTokens: 22400,
+      outputTokens: 11800,
+      workspaceFiles: ["analysis/strategic_report.md", "analysis/swot_matrix.json"],
+      result: "SWOT analysis complete. ZeroClaw's agent context management and real-time orchestration dashboard are unique strengths. Primary risk: developer adoption curve. Recommend focusing on developer experience and one-click integrations. Full report at analysis/strategic_report.md.",
+      error: null,
+      spawnedAt: ago(60),
+      completedAt: ago(22),
+      duration: 2280,
+    };
+    const saActive: SubAgent = {
+      id: activeAgentId,
+      parentAgentId,
+      agentName: "Pricing Analyst SubAgent",
+      objective: "Model competitive pricing scenarios using the collected data. Propose 3 pricing tiers that maximize conversion and LTV.",
+      status: "running",
+      model: "claude-sonnet-4-6",
+      inputTokens: 8200,
+      outputTokens: 4200,
+      workspaceFiles: [],
+      result: null,
+      error: null,
+      spawnedAt: ago(3),
+      completedAt: null,
+      duration: 0,
+    };
+    for (const sa of [saResearch, saScrape, saAnalysis, saActive]) {
+      this.subAgents.set(sa.id, { ...sa, _userId: userId });
+    }
+
+    // ---- Workspace Files ----
+    const wsFiles: SharedWorkspaceFile[] = [
+      {
+        id: randomUUID(),
+        path: "research/competitors.json",
+        name: "competitors.json",
+        type: "data",
+        size: 18420,
+        createdBy: researchAgentId,
+        lastAccessedBy: analysisAgentId,
+        accessCount: 4,
+        createdAt: ago(35),
+        updatedAt: ago(22),
+      },
+      {
+        id: randomUUID(),
+        path: "research/competitor-summary.md",
+        name: "competitor-summary.md",
+        type: "result",
+        size: 5240,
+        createdBy: researchAgentId,
+        lastAccessedBy: parentAgentId,
+        accessCount: 6,
+        createdAt: ago(35),
+        updatedAt: ago(35),
+      },
+      {
+        id: randomUUID(),
+        path: "research/pricing_data.json",
+        name: "pricing_data.json",
+        type: "data",
+        size: 9870,
+        createdBy: scrapeAgentId,
+        lastAccessedBy: analysisAgentId,
+        accessCount: 3,
+        createdAt: ago(50),
+        updatedAt: ago(50),
+      },
+      {
+        id: randomUUID(),
+        path: "analysis/strategic_report.md",
+        name: "strategic_report.md",
+        type: "result",
+        size: 12800,
+        createdBy: analysisAgentId,
+        lastAccessedBy: parentAgentId,
+        accessCount: 2,
+        createdAt: ago(22),
+        updatedAt: ago(22),
+      },
+      {
+        id: randomUUID(),
+        path: "analysis/swot_matrix.json",
+        name: "swot_matrix.json",
+        type: "result",
+        size: 3140,
+        createdBy: analysisAgentId,
+        lastAccessedBy: parentAgentId,
+        accessCount: 1,
+        createdAt: ago(22),
+        updatedAt: ago(22),
+      },
+      {
+        id: randomUUID(),
+        path: "config/orchestrator.json",
+        name: "orchestrator.json",
+        type: "config",
+        size: 820,
+        createdBy: parentAgentId,
+        lastAccessedBy: parentAgentId,
+        accessCount: 12,
+        createdAt: ago(180),
+        updatedAt: ago(5),
+      },
+    ];
+    for (const wf of wsFiles) {
+      this.workspaceFiles.set(wf.id, { ...wf, _userId: userId });
+    }
+
+    // ---- Memory Entries ----
+    const memEntries: AgentMemoryEntry[] = [
+      {
+        id: randomUUID(),
+        agentId: parentAgentId,
+        memoryType: "project",
+        content: "ZeroClaw competitive analysis project: researching top 5 orchestration competitors. Parent task: build pricing strategy for launch.",
+        source: "task-init-001",
+        confidence: 0.98,
+        accessCount: 8,
+        lastAccessed: ago(5),
+        createdAt: ago(180),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: parentAgentId,
+        memoryType: "fact",
+        content: "Key competitors: Temporal (workflow orchestration), Windmill (open-source), Prefect (dataflow), Dagster (data platform), Airflow (legacy pipeline). None offer real-time agent context management UI.",
+        source: "sub-research-01:result",
+        confidence: 0.95,
+        accessCount: 5,
+        lastAccessed: ago(22),
+        createdAt: ago(35),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: parentAgentId,
+        memoryType: "fact",
+        content: "Competitor pricing range: free tier (Windmill, Dagster) to $500/mo enterprise (Prefect). Most charge per compute-minute or per execution. ZeroClaw should price on agent-seats + context tokens.",
+        source: "sub-scrape-02:result",
+        confidence: 0.92,
+        accessCount: 3,
+        lastAccessed: ago(22),
+        createdAt: ago(50),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: researchAgentId,
+        memoryType: "fact",
+        content: "Temporal.io: Go-based workflow engine, strong developer community, $0.10 per workflow execution on cloud. No UI for agent context monitoring.",
+        source: "web-research-session",
+        confidence: 0.90,
+        accessCount: 2,
+        lastAccessed: ago(40),
+        createdAt: ago(80),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: researchAgentId,
+        memoryType: "fact",
+        content: "Prefect: Python-first, strong data engineering focus, 2.0 is open source, cloud offering at $500/mo for teams. Not AI-agent focused.",
+        source: "web-research-session",
+        confidence: 0.88,
+        accessCount: 2,
+        lastAccessed: ago(38),
+        createdAt: ago(78),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: analysisAgentId,
+        memoryType: "project",
+        content: "SWOT analysis task: synthesize research/competitors.json and research/pricing_data.json into strategic recommendations for ZeroClaw launch positioning.",
+        source: "task-handoff-from-orchestrator",
+        confidence: 0.97,
+        accessCount: 4,
+        lastAccessed: ago(22),
+        createdAt: ago(60),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: parentAgentId,
+        memoryType: "preference",
+        content: "User prefers concise executive summaries (< 500 words) with bullet points over long prose. Prioritize actionable recommendations.",
+        source: "user-feedback-session",
+        confidence: 0.85,
+        accessCount: 6,
+        lastAccessed: ago(10),
+        createdAt: ago(120),
+        expiresAt: null,
+      },
+      {
+        id: randomUUID(),
+        agentId: parentAgentId,
+        memoryType: "conversation",
+        content: "Previous conversation: user asked for competitor analysis. Delegated to 3 subagents. User expressed satisfaction with Research SubAgent output. Currently running pricing analysis.",
+        source: "conversation-2025-03-19",
+        confidence: 0.80,
+        accessCount: 3,
+        lastAccessed: ago(3),
+        createdAt: ago(90),
+        expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+      {
+        id: randomUUID(),
+        agentId: activeAgentId,
+        memoryType: "project",
+        content: "Pricing model task: use analysis/strategic_report.md and research/pricing_data.json to propose 3 pricing tiers optimized for developer-first adoption and SaaS LTV.",
+        source: "task-handoff-from-orchestrator",
+        confidence: 0.97,
+        accessCount: 2,
+        lastAccessed: ago(2),
+        createdAt: ago(3),
+        expiresAt: null,
+      },
+    ];
+    for (const me of memEntries) {
+      this.memoryEntries.set(me.id, { ...me, _userId: userId });
+    }
+
+    // ---- Handoffs ----
+    const handoffsList: ContextHandoff[] = [
+      {
+        id: randomUUID(),
+        fromAgentId: parentAgentId,
+        toAgentId: researchAgentId,
+        handoffType: "delegation",
+        tokensBefore: 45200,
+        tokensAfter: 3800,
+        tokensSaved: 41400,
+        payload: "Delegating competitor research task. Objective: research top 5 orchestration competitors. Write findings to workspace/research/. Parent context summarized and attached.",
+        success: true,
+        timestamp: ago(90),
+      },
+      {
+        id: randomUUID(),
+        fromAgentId: parentAgentId,
+        toAgentId: scrapeAgentId,
+        handoffType: "delegation",
+        tokensBefore: 46800,
+        tokensAfter: 4200,
+        tokensSaved: 42600,
+        payload: "Delegating pricing data collection. Fetch competitor pricing pages and save to workspace/research/pricing_data.json. Context window compressed prior to handoff.",
+        success: true,
+        timestamp: ago(85),
+      },
+      {
+        id: randomUUID(),
+        fromAgentId: researchAgentId,
+        toAgentId: parentAgentId,
+        handoffType: "result",
+        tokensBefore: 87340,
+        tokensAfter: 8200,
+        tokensSaved: 79140,
+        payload: "Research complete. 5 competitors identified and profiled. Key finding: no competitor offers real-time agent context UI. Files: research/competitors.json, research/competitor-summary.md",
+        success: true,
+        timestamp: ago(35),
+      },
+      {
+        id: randomUUID(),
+        fromAgentId: analysisAgentId,
+        toAgentId: parentAgentId,
+        handoffType: "result",
+        tokensBefore: 34200,
+        tokensAfter: 5100,
+        tokensSaved: 29100,
+        payload: "SWOT analysis complete. Strategic recommendation: launch with developer-first free tier, differentiate on context management UI. Files: analysis/strategic_report.md, analysis/swot_matrix.json",
+        success: true,
+        timestamp: ago(22),
+      },
+      {
+        id: randomUUID(),
+        fromAgentId: parentAgentId,
+        toAgentId: activeAgentId,
+        handoffType: "delegation",
+        tokensBefore: 142850,
+        tokensAfter: 9600,
+        tokensSaved: 133250,
+        payload: "Delegating pricing tier design. Use collected research to propose 3 pricing tiers. Context compressed using auto-summarize (threshold: 80%). Key context summary attached.",
+        success: true,
+        timestamp: ago(3),
+      },
+    ];
+    for (const h of handoffsList) {
+      this.handoffs.set(h.id, { ...h, _userId: userId });
+    }
   }
 
   private seedGlobal() {
@@ -1655,6 +2146,252 @@ export class MemStorage implements IStorage {
   clearAuditLog(userId: string): void {
     this.auditLogByUser.set(userId, []);
     this.persist("auditLog clear", () => dbClearAuditLog(userId));
+  }
+
+  // ---- Context Orchestration Methods ----
+
+  getContextWindows(userId: string): ContextWindow[] {
+    this.seedOrchestrationForUser(userId);
+    return Array.from(this.contextWindows.values())
+      .filter((cw) => cw._userId === userId)
+      .map(({ _userId, ...cw }) => cw as ContextWindow)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }
+
+  getContextWindow(userId: string, id: string): ContextWindow | undefined {
+    this.seedOrchestrationForUser(userId);
+    const cw = this.contextWindows.get(id);
+    if (!cw || cw._userId !== userId) return undefined;
+    const { _userId, ...rest } = cw;
+    return rest as ContextWindow;
+  }
+
+  updateContextWindow(userId: string, id: string, data: UpdateContextWindow): ContextWindow | undefined {
+    this.seedOrchestrationForUser(userId);
+    const cw = this.contextWindows.get(id);
+    if (!cw || cw._userId !== userId) return undefined;
+    if (data.maxTokens !== undefined) cw.maxTokens = data.maxTokens;
+    if (data.compressionEnabled !== undefined) cw.compressionEnabled = data.compressionEnabled;
+    if (data.autoSummarizeThreshold !== undefined) cw.autoSummarizeThreshold = data.autoSummarizeThreshold;
+    cw.updatedAt = new Date().toISOString();
+    // Recompute health status
+    const utilization = cw.usedTokens / cw.maxTokens;
+    if (utilization >= 0.95) cw.healthStatus = "overflow";
+    else if (utilization >= 0.85) cw.healthStatus = "critical";
+    else if (utilization >= 0.70) cw.healthStatus = "warning";
+    else cw.healthStatus = "healthy";
+    this.contextWindows.set(id, cw);
+    this.persist("contextWindow", () => dbUpsertContextWindow(userId, cw));
+    const { _userId, ...rest } = cw;
+    return rest as ContextWindow;
+  }
+
+  getSubAgents(userId: string): SubAgent[] {
+    this.seedOrchestrationForUser(userId);
+    return Array.from(this.subAgents.values())
+      .filter((sa) => sa._userId === userId)
+      .map(({ _userId, ...sa }) => sa as SubAgent)
+      .sort((a, b) => new Date(b.spawnedAt).getTime() - new Date(a.spawnedAt).getTime());
+  }
+
+  getSubAgent(userId: string, id: string): SubAgent | undefined {
+    this.seedOrchestrationForUser(userId);
+    const sa = this.subAgents.get(id);
+    if (!sa || sa._userId !== userId) return undefined;
+    const { _userId, ...rest } = sa;
+    return rest as SubAgent;
+  }
+
+  spawnSubAgent(userId: string, data: SpawnSubAgent): SubAgent {
+    this.seedOrchestrationForUser(userId);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const sa: SubAgent = {
+      id,
+      parentAgentId: data.parentAgentId,
+      agentName: data.agentName,
+      objective: data.objective,
+      status: "spawning",
+      model: data.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      workspaceFiles: [],
+      result: null,
+      error: null,
+      spawnedAt: now,
+      completedAt: null,
+      duration: 0,
+    };
+    this.subAgents.set(id, { ...sa, _userId: userId });
+    // Auto-create a context window for this subagent
+    const cwId = randomUUID();
+    const cw: ContextWindow = {
+      id: cwId,
+      agentId: id,
+      agentName: data.agentName,
+      maxTokens: 100000,
+      usedTokens: 0,
+      reservedTokens: 8000,
+      healthStatus: "healthy",
+      compressionEnabled: false,
+      autoSummarizeThreshold: 85,
+      lastCompressedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.contextWindows.set(cwId, { ...cw, _userId: userId });
+    this.persist("subAgent", () => dbUpsertSubAgent(userId, sa));
+    this.persist("contextWindow", () => dbUpsertContextWindow(userId, cw));
+    return sa;
+  }
+
+  updateSubAgentStatus(userId: string, id: string, status: SubAgentStatus, result?: string, error?: string): SubAgent | undefined {
+    this.seedOrchestrationForUser(userId);
+    const sa = this.subAgents.get(id);
+    if (!sa || sa._userId !== userId) return undefined;
+    sa.status = status;
+    if (result !== undefined) sa.result = result;
+    if (error !== undefined) sa.error = error;
+    if (status === "completed" || status === "failed" || status === "cancelled") {
+      sa.completedAt = new Date().toISOString();
+      sa.duration = Math.round((new Date(sa.completedAt).getTime() - new Date(sa.spawnedAt).getTime()) / 1000);
+    }
+    this.subAgents.set(id, sa);
+    this.persist("subAgent", () => dbUpsertSubAgent(userId, sa));
+    const { _userId, ...rest } = sa;
+    return rest as SubAgent;
+  }
+
+  getWorkspaceFiles(userId: string): SharedWorkspaceFile[] {
+    this.seedOrchestrationForUser(userId);
+    return Array.from(this.workspaceFiles.values())
+      .filter((wf) => wf._userId === userId)
+      .map(({ _userId, ...wf }) => wf as SharedWorkspaceFile)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }
+
+  createWorkspaceFile(userId: string, data: CreateWorkspaceFile): SharedWorkspaceFile {
+    this.seedOrchestrationForUser(userId);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const wf: SharedWorkspaceFile = {
+      id,
+      path: data.path,
+      name: data.name,
+      type: data.type,
+      size: data.size,
+      createdBy: data.createdBy,
+      lastAccessedBy: data.createdBy,
+      accessCount: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.workspaceFiles.set(id, { ...wf, _userId: userId });
+    this.persist("workspaceFile", () => dbUpsertWorkspaceFile(userId, wf));
+    return wf;
+  }
+
+  deleteWorkspaceFile(userId: string, id: string): boolean {
+    this.seedOrchestrationForUser(userId);
+    const wf = this.workspaceFiles.get(id);
+    if (!wf || wf._userId !== userId) return false;
+    this.workspaceFiles.delete(id);
+    this.persist("workspaceFile delete", () => dbDeleteWorkspaceFile(userId, id));
+    return true;
+  }
+
+  getMemoryEntries(userId: string, agentId?: string): AgentMemoryEntry[] {
+    this.seedOrchestrationForUser(userId);
+    let entries = Array.from(this.memoryEntries.values())
+      .filter((me) => me._userId === userId)
+      .map(({ _userId, ...me }) => me as AgentMemoryEntry);
+    if (agentId) entries = entries.filter((me) => me.agentId === agentId);
+    return entries.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  createMemoryEntry(userId: string, data: CreateMemoryEntry): AgentMemoryEntry {
+    this.seedOrchestrationForUser(userId);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const me: AgentMemoryEntry = {
+      id,
+      agentId: data.agentId,
+      memoryType: data.memoryType,
+      content: data.content,
+      source: data.source,
+      confidence: data.confidence,
+      accessCount: 0,
+      lastAccessed: now,
+      createdAt: now,
+      expiresAt: null,
+    };
+    this.memoryEntries.set(id, { ...me, _userId: userId });
+    this.persist("memoryEntry", () => dbUpsertMemoryEntry(userId, me));
+    return me;
+  }
+
+  deleteMemoryEntry(userId: string, id: string): boolean {
+    this.seedOrchestrationForUser(userId);
+    const me = this.memoryEntries.get(id);
+    if (!me || me._userId !== userId) return false;
+    this.memoryEntries.delete(id);
+    this.persist("memoryEntry delete", () => dbDeleteMemoryEntry(userId, id));
+    return true;
+  }
+
+  getHandoffs(userId: string): ContextHandoff[] {
+    this.seedOrchestrationForUser(userId);
+    return Array.from(this.handoffs.values())
+      .filter((h) => h._userId === userId)
+      .map(({ _userId, ...h }) => h as ContextHandoff)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }
+
+  createHandoff(userId: string, data: Omit<ContextHandoff, "id" | "timestamp">): ContextHandoff {
+    this.seedOrchestrationForUser(userId);
+    const id = randomUUID();
+    const handoff: ContextHandoff = {
+      ...data,
+      id,
+      timestamp: new Date().toISOString(),
+    };
+    this.handoffs.set(id, { ...handoff, _userId: userId });
+    this.persist("handoff", () => dbInsertHandoff(userId, handoff));
+    return handoff;
+  }
+
+  getOrchestrationStats(userId: string): OrchestrationStats {
+    this.seedOrchestrationForUser(userId);
+    const subAgentsList = Array.from(this.subAgents.values()).filter((sa) => sa._userId === userId);
+    const handoffsList = Array.from(this.handoffs.values()).filter((h) => h._userId === userId);
+    const workspaceFilesList = Array.from(this.workspaceFiles.values()).filter((wf) => wf._userId === userId);
+    const memoryEntriesList = Array.from(this.memoryEntries.values()).filter((me) => me._userId === userId);
+    const contextWindowsList = Array.from(this.contextWindows.values()).filter((cw) => cw._userId === userId);
+
+    const activeStatuses: SubAgentStatus[] = ["spawning", "running"];
+    const activeSubAgents = subAgentsList.filter((sa) => activeStatuses.includes(sa.status)).length;
+    const completedSubAgents = subAgentsList.filter((sa) => sa.status === "completed").length;
+    const failedSubAgents = subAgentsList.filter((sa) => sa.status === "failed").length;
+
+    const totalTokensUsed = subAgentsList.reduce((sum, sa) => sum + sa.inputTokens + sa.outputTokens, 0);
+    const totalTokensSaved = handoffsList.reduce((sum, h) => sum + h.tokensSaved, 0);
+
+    const avgContextUtilization = contextWindowsList.length > 0
+      ? Math.round(contextWindowsList.reduce((sum, cw) => sum + (cw.usedTokens / cw.maxTokens) * 100, 0) / contextWindowsList.length)
+      : 0;
+
+    return {
+      totalSubAgentsSpawned: subAgentsList.length,
+      activeSubAgents,
+      completedSubAgents,
+      failedSubAgents,
+      totalTokensUsed,
+      totalTokensSaved,
+      avgContextUtilization,
+      totalHandoffs: handoffsList.length,
+      totalWorkspaceFiles: workspaceFilesList.length,
+      totalMemoryEntries: memoryEntriesList.length,
+    };
   }
 
   // ---- Admin Methods ----
