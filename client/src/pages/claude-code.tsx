@@ -49,6 +49,10 @@ import {
   Shield,
   Info,
   ExternalLink,
+  MessageSquareReply,
+  FileCode2,
+  Send,
+  X,
 } from "lucide-react";
 
 const AVAILABLE_TOOLS = ["Read", "Edit", "Bash", "Write", "Grep", "Glob", "WebFetch"];
@@ -440,12 +444,28 @@ function ConfigTab() {
   );
 }
 
+// ---- Extracted File type ----
+interface ExtractedFile {
+  filename: string;
+  language: string;
+  content: string;
+  size: number;
+}
+
 function TasksTab() {
   const { toast } = useToast();
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskPrompt, setTaskPrompt] = useState("");
+
+  // --- New state for Reply ---
+  const [replyingTaskId, setReplyingTaskId] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+
+  // --- New state for extracted files ---
+  const [extractedFiles, setExtractedFiles] = useState<Record<string, ExtractedFile[]>>({});
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
 
   const { data: tasks, isLoading } = useQuery<CodingTask[]>({
     queryKey: ["/api/claude-code/tasks"],
@@ -477,6 +497,38 @@ function TasksTab() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/claude-code/tasks"] });
       toast({ title: "Task deleted" });
+    },
+  });
+
+  // --- Reply mutation ---
+  const replyToTask = useMutation({
+    mutationFn: async ({ id, message }: { id: string; message: string }) => {
+      const res = await apiRequest("POST", `/api/claude-code/tasks/${id}/reply`, { message });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/claude-code/tasks"] });
+      setReplyingTaskId(null);
+      setReplyText("");
+      toast({ title: "Reply sent" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Reply failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // --- Extract files mutation ---
+  const extractFiles = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("POST", `/api/claude-code/tasks/${id}/extract-files`);
+      return res.json() as Promise<{ files: ExtractedFile[] }>;
+    },
+    onSuccess: (data, id) => {
+      setExtractedFiles((prev) => ({ ...prev, [id]: data.files }));
+      toast({ title: `Extracted ${data.files.length} file(s)` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Extraction failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -556,8 +608,14 @@ function TasksTab() {
         <div className="space-y-2">
           {tasks.map((task) => {
             const isExpanded = expandedTask === task.id;
+            const isCompleted = task.status === "completed";
+            const hasCodeBlocks = task.response?.includes("```");
+            const isReplying = replyingTaskId === task.id;
+            const taskExtractedFiles = extractedFiles[task.id];
+
             return (
               <Card key={task.id} className="border-border/50 bg-card/50 overflow-hidden">
+                {/* Header row */}
                 <div
                   className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-muted/20 transition-colors"
                   onClick={() => setExpandedTask(isExpanded ? null : task.id)}
@@ -575,6 +633,52 @@ function TasksTab() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
+                    {/* Reply button — only on completed tasks */}
+                    {isCompleted && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[10px] font-mono text-muted-foreground hover:text-primary gap-1"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isReplying) {
+                            setReplyingTaskId(null);
+                            setReplyText("");
+                          } else {
+                            setReplyingTaskId(task.id);
+                            setExpandedTask(task.id);
+                          }
+                        }}
+                        data-testid={`claude-code-reply-${task.id}`}
+                      >
+                        <MessageSquareReply className="h-3 w-3" />
+                        Reply
+                      </Button>
+                    )}
+
+                    {/* Extract Files button — only on completed tasks with code blocks */}
+                    {isCompleted && hasCodeBlocks && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[10px] font-mono text-muted-foreground hover:text-accent gap-1"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          extractFiles.mutate(task.id);
+                          setExpandedTask(task.id);
+                        }}
+                        disabled={extractFiles.isPending && extractFiles.variables === task.id}
+                        data-testid={`claude-code-extract-${task.id}`}
+                      >
+                        {extractFiles.isPending && extractFiles.variables === task.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <FileCode2 className="h-3 w-3" />
+                        )}
+                        Extract Files
+                      </Button>
+                    )}
+
                     <Button
                       variant="ghost"
                       size="icon"
@@ -618,6 +722,122 @@ function TasksTab() {
                         <p className="text-[10px] font-mono text-muted-foreground">
                           Context notes: {task.contextNotes.join(", ")}
                         </p>
+                      </div>
+                    )}
+
+                    {/* ---- Extracted Files Section ---- */}
+                    {taskExtractedFiles && taskExtractedFiles.length > 0 && (
+                      <div className="border-t border-border/20 px-4 py-3 bg-background/20">
+                        <p className="text-[10px] font-mono uppercase tracking-wider text-accent/70 mb-3 flex items-center gap-1.5">
+                          <FileCode2 className="h-3 w-3" />
+                          Extracted Files ({taskExtractedFiles.length})
+                        </p>
+                        <div className="space-y-2">
+                          {taskExtractedFiles.map((file, idx) => {
+                            const fileKey = `${task.id}-${idx}`;
+                            const isFileExpanded = expandedFiles[fileKey];
+                            return (
+                              <div
+                                key={fileKey}
+                                className="rounded-lg border border-border/40 bg-card/60 overflow-hidden"
+                              >
+                                {/* File header */}
+                                <div
+                                  className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/20 transition-colors"
+                                  onClick={() =>
+                                    setExpandedFiles((prev) => ({
+                                      ...prev,
+                                      [fileKey]: !prev[fileKey],
+                                    }))
+                                  }
+                                >
+                                  <FileCode2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                  <span className="text-xs font-mono flex-1 truncate">{file.filename}</span>
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[9px] px-1.5 py-0 border-accent/30 text-accent/80 font-mono"
+                                  >
+                                    {file.language || "text"}
+                                  </Badge>
+                                  <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+                                    {file.size != null
+                                      ? file.size < 1024
+                                        ? `${file.size}B`
+                                        : `${(file.size / 1024).toFixed(1)}KB`
+                                      : ""}
+                                  </span>
+                                  {isFileExpanded ? (
+                                    <ChevronUp className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                  ) : (
+                                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                  )}
+                                </div>
+                                {/* Collapsible code preview */}
+                                {isFileExpanded && (
+                                  <div className="border-t border-border/30 bg-[hsl(160,30%,5%)] px-3 py-3">
+                                    <pre className="text-[11px] font-mono text-emerald-300/85 whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-64 overflow-y-auto">
+                                      {file.content}
+                                    </pre>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ---- Reply Section ---- */}
+                    {isReplying && (
+                      <div className="border-t border-primary/20 px-4 py-3 bg-primary/5">
+                        <p className="text-[10px] font-mono uppercase tracking-wider text-primary/70 mb-3 flex items-center gap-1.5">
+                          <MessageSquareReply className="h-3 w-3" />
+                          Follow-up Reply
+                        </p>
+                        <div className="space-y-2">
+                          <Textarea
+                            value={replyText}
+                            onChange={(e) => setReplyText(e.target.value)}
+                            placeholder="Ask a follow-up question or request changes..."
+                            className="font-mono text-xs min-h-[80px] bg-background/60 resize-y border-primary/20 focus-visible:ring-primary/30"
+                            data-testid={`claude-code-reply-textarea-${task.id}`}
+                            autoFocus
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-xs text-muted-foreground h-7"
+                              onClick={() => {
+                                setReplyingTaskId(null);
+                                setReplyText("");
+                              }}
+                              data-testid={`claude-code-reply-cancel-${task.id}`}
+                            >
+                              <X className="h-3 w-3 mr-1" />
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="text-xs h-7 gap-1.5"
+                              disabled={
+                                !replyText.trim() ||
+                                (replyToTask.isPending && replyToTask.variables?.id === task.id)
+                              }
+                              onClick={() =>
+                                replyToTask.mutate({ id: task.id, message: replyText })
+                              }
+                              data-testid={`claude-code-reply-submit-${task.id}`}
+                            >
+                              {replyToTask.isPending && replyToTask.variables?.id === task.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Send className="h-3 w-3" />
+                              )}
+                              Send Reply
+                            </Button>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>

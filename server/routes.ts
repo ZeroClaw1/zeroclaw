@@ -15,6 +15,7 @@ import { checkUsageLimit } from "./metering";
 import { sendPasswordResetEmail } from "./email";
 import { setBroadcast, executePipeline, cancelPipelineExecution, rerunPipeline } from "./engine";
 import { openclawBridge } from "./openclaw-bridge";
+import { setAgentBroadcast, startAgentScheduler, stopAgentScheduler, executeAgentTask } from "./agent-runtime";
 import {
   insertPipelineSchema,
   insertAgentSchema,
@@ -41,6 +42,7 @@ import {
   createMemoryEntrySchema,
   updateContextWindowSchema,
 } from "@shared/schema";
+import type { StepType } from "@shared/schema";
 
 // Session type augmentation
 declare module "express-session" {
@@ -241,14 +243,16 @@ export async function registerRoutes(
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
   // Wire broadcast from engine → all WS clients
-  setBroadcast((event: string, data: unknown) => {
+  const broadcastFn = (event: string, data: unknown) => {
     const message = JSON.stringify({ event, data });
     wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
       }
     });
-  });
+  };
+  setBroadcast(broadcastFn);
+  setAgentBroadcast(broadcastFn);
 
   wss.on("connection", (ws) => {
     ws.send(JSON.stringify({ event: "connected", data: { message: "OpenClaw WebSocket connected" } }));
@@ -545,6 +549,10 @@ export async function registerRoutes(
       return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
     }
     const agent = storage.createAgent(userId, parsed.data);
+    // Start scheduler if agent comes online
+    if (agent.status === "online") {
+      startAgentScheduler(userId, agent.id);
+    }
     res.status(201).json(agent);
   });
 
@@ -552,6 +560,12 @@ export async function registerRoutes(
     const userId = req.session.userId!;
     const agent = storage.updateAgent(userId, req.params.id, req.body);
     if (!agent) return res.status(404).json({ error: "Agent not found" });
+    // Start/stop scheduler based on new status
+    if (agent.status === "online") {
+      startAgentScheduler(userId, agent.id);
+    } else if (agent.status === "offline" || agent.status === "error") {
+      stopAgentScheduler(userId, agent.id);
+    }
     res.json(agent);
   });
 
@@ -566,11 +580,33 @@ export async function registerRoutes(
       lastHeartbeat: new Date().toISOString(),
       status: wasOffline ? "online" : agent.status,
     });
+    // Start scheduler if agent just came online
+    if (wasOffline && updated) {
+      startAgentScheduler(userId, req.params.id);
+    }
     res.json(updated);
+  });
+
+  // POST /api/agents/:id/execute — manually trigger task processing
+  app.post("/api/agents/:id/execute", (req, res) => {
+    const userId = req.session.userId!;
+    const agent = storage.getAgent(userId, req.params.id);
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    const { taskId } = req.body;
+    // Execute asynchronously
+    if (taskId) {
+      executeAgentTask(userId, req.params.id, taskId);
+    } else {
+      // Trigger next queued task
+      startAgentScheduler(userId, req.params.id);
+    }
+    res.json({ ok: true, message: "Task processing triggered" });
   });
 
   app.delete("/api/agents/:id", (req, res) => {
     const userId = req.session.userId!;
+    // Stop scheduler before deleting
+    stopAgentScheduler(userId, req.params.id);
     const deleted = storage.deleteAgent(userId, req.params.id);
     if (!deleted) return res.status(404).json({ error: "Agent not found" });
     res.json({ ok: true });
@@ -894,7 +930,7 @@ export async function registerRoutes(
     const gatewayUrl = `${config.gatewayUrl}:${config.gatewayPort}`;
 
     let phases: Array<{ id: string; title: string; tasks: string[] }> = [];
-    let source: "openclaw" | "builtin" = "builtin";
+    let source: "openclaw" | "builtin" | "ai" = "builtin";
 
     // Try OpenClaw gateway first
     if (config.connected) {
@@ -930,7 +966,44 @@ export async function registerRoutes(
       }
     }
 
-    // Builtin intelligent fallback
+    // AI-powered fallback using user's Claude API key
+    if (phases.length === 0) {
+      const claudeConfig = storage.getClaudeCodeConfigRaw(userId);
+      if (claudeConfig?.apiKey) {
+        try {
+          const client = new Anthropic({ apiKey: claudeConfig.apiKey });
+          const aiResponse = await client.messages.create({
+            model: claudeConfig.model || "claude-sonnet-4-20250514",
+            max_tokens: 4096,
+            system: "You are a project planning AI. Analyze the given plan and break it into sequential development phases. Each phase should have a title and concrete tasks. Return ONLY valid JSON: [{\"title\": \"Phase Name\", \"tasks\": [\"task 1\", \"task 2\"]}]",
+            messages: [{ role: "user", content: markdown }],
+          });
+
+          const aiText = aiResponse.content
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join("");
+
+          // Parse JSON from the response (handle code blocks)
+          const jsonMatch = aiText.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsedAi = JSON.parse(jsonMatch[0]);
+            if (Array.isArray(parsedAi)) {
+              phases = parsedAi.map((p: any, i: number) => ({
+                id: `phase-${i + 1}`,
+                title: p.title || `Phase ${i + 1}`,
+                tasks: Array.isArray(p.tasks) ? p.tasks : [],
+              }));
+              source = "ai";
+            }
+          }
+        } catch {
+          // Fall through to regex parser
+        }
+      }
+    }
+
+    // Final regex fallback
     if (phases.length === 0) {
       phases = analyzeMarkdownIntoPhases(markdown);
       source = "builtin";
@@ -1347,14 +1420,90 @@ export async function registerRoutes(
 
   // Incoming GitHub webhook endpoint (no auth — external)
   app.post("/api/webhooks/github", (req, res) => {
-    // Webhooks from GitHub are external — we process for all users that have matching webhooks
-    // For MVP, this is a simplified handler
-    const event = req.headers["x-github-event"] as string || "push";
+    const event = (req.headers["x-github-event"] as string) || "push";
     const payload = req.body;
-    const branch = payload?.ref?.replace("refs/heads/", "") || payload?.pull_request?.head?.ref || "main";
 
-    res.json({ event, branch, triggered: [], matchedCount: 0, note: "External webhook processing — per-user scoping in future" });
+    // Extract branch and repo info
+    const branch = payload?.ref?.replace("refs/heads/", "") || payload?.pull_request?.head?.ref || "main";
+    const repoName = payload?.repository?.full_name || payload?.repository?.name || "unknown";
+    const commit = payload?.after?.slice(0, 7) || payload?.pull_request?.head?.sha?.slice(0, 7) || "unknown";
+    const author = payload?.pusher?.name || payload?.sender?.login || "github";
+
+    const triggered: string[] = [];
+
+    // Iterate all users — for each, check their webhooks
+    const allUsers = storage.getAllUsers();
+    for (const user of allUsers) {
+      const webhooks = storage.getWebhooks(user.id);
+      for (const wh of webhooks) {
+        if (!wh.enabled) continue;
+        if (wh.event !== event && wh.event !== "workflow_dispatch") continue;
+        if ((wh as any).branch !== "*" && (wh as any).branch !== branch) continue;
+
+        // Update webhook stats
+        storage.updateWebhook(user.id, wh.id, { lastTriggered: new Date().toISOString() } as any);
+
+        // Find the linked workflow
+        const workflowId = (wh as any).workflowId;
+        if (!workflowId) continue;
+        const workflow = storage.getWorkflow(user.id, workflowId);
+        if (!workflow) continue;
+
+        // Build steps from workflow nodes (skip trigger nodes)
+        const steps = (workflow as any).nodes
+          ? (workflow as any).nodes
+              .filter((n: any) => n.type !== "trigger")
+              .map((n: any) => ({ name: n.label || n.type, type: mapNodeTypeToStepType(n.type) }))
+          : [];
+
+        if (steps.length === 0) continue;
+
+        // Create a pipeline from the workflow and execute it
+        const pipeline = storage.createPipelineRaw(user.id, {
+          name: `${workflow.name} (${event}@${branch})`,
+          description: `Triggered by GitHub ${event} on ${repoName}`,
+          branch,
+          commit,
+          author,
+          steps,
+          envVars: {
+            REPO_URL: payload?.repository?.clone_url || "",
+            GITHUB_EVENT: event,
+          },
+        });
+
+        executePipeline(pipeline, user.id);
+        triggered.push(pipeline.id);
+
+        // Audit log
+        storage.addAuditLog(user.id, {
+          action: "execute",
+          resource: "pipeline",
+          resourceId: pipeline.id,
+          resourceName: pipeline.name,
+          details: `Triggered by GitHub webhook: ${event} on ${branch} (${repoName})`,
+          user: "github-webhook",
+        });
+      }
+    }
+
+    res.json({ event, branch, repo: repoName, triggered, matchedCount: triggered.length });
   });
+
+  /** Map workflow node types to pipeline step types */
+  function mapNodeTypeToStepType(nodeType: string): StepType {
+    const map: Record<string, StepType> = {
+      step: "build",
+      build: "build",
+      test: "test",
+      deploy: "deploy",
+      lint: "lint",
+      scan: "scan",
+      notify: "notify",
+      openclaw: "openclaw",
+    };
+    return map[nodeType] || "build";
+  }
 
   // ========================================
   // Pipeline Artifacts
@@ -1790,6 +1939,116 @@ export async function registerRoutes(
     res.json({ ok: true });
   });
 
+  // POST /api/claude-code/tasks/:id/reply — continue a conversation with a coding task
+  app.post("/api/claude-code/tasks/:id/reply", async (req, res) => {
+    const userId = req.session.userId!;
+    const task = storage.getCodingTask(userId, req.params.id as string);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const { message } = req.body;
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    const config = storage.getClaudeCodeConfigRaw(userId);
+    if (!config?.apiKey) {
+      return res.status(400).json({ error: "Claude Code not configured" });
+    }
+
+    // Build conversation history from the task
+    const messages: Array<{ role: "user" | "assistant"; content: string }> = [
+      { role: "user", content: task.prompt },
+    ];
+    if (task.response) {
+      messages.push({ role: "assistant", content: task.response });
+    }
+    // Add the new message
+    messages.push({ role: "user", content: message });
+
+    storage.updateCodingTask(userId, task.id, { status: "running" });
+    res.json({ ok: true, taskId: task.id });
+
+    try {
+      const client = new Anthropic({ apiKey: config.apiKey });
+      const response = await client.messages.create({
+        model: config.model || "claude-sonnet-4-20250514",
+        max_tokens: config.maxTokens || 4096,
+        system: "You are Claude Code, an AI programming assistant integrated into ZeroClaw. Continue the conversation, incorporating any feedback. Provide updated code with explanations.",
+        messages,
+      });
+
+      const responseText = response.content
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("\n");
+
+      const tokensUsed = (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
+
+      // Append the conversation to the response
+      const fullResponse =
+        (task.response || "") +
+        "\n\n---\n**Follow-up:** " + message +
+        "\n\n**Response:**\n" + responseText;
+
+      storage.updateCodingTask(userId, task.id, {
+        status: "completed",
+        response: fullResponse,
+        tokensUsed: task.tokensUsed + tokensUsed,
+        completedAt: new Date().toISOString(),
+      });
+
+      storage.incrementClaudeCodeTokens(userId, tokensUsed);
+    } catch (err: any) {
+      storage.updateCodingTask(userId, task.id, {
+        status: "failed",
+        error: err?.message || "Follow-up failed",
+        completedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  // POST /api/claude-code/tasks/:id/extract-files — extract code files from a task response
+  app.post("/api/claude-code/tasks/:id/extract-files", (req, res) => {
+    const userId = req.session.userId!;
+    const task = storage.getCodingTask(userId, req.params.id as string);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (!task.response) return res.status(400).json({ error: "Task has no response" });
+
+    // Extract code blocks with file paths from the response
+    const fileRegex = /```(\w+)?\s*\n?(?:\/\/\s*(.+?)\n|#\s*(.+?)\n|<!--\s*(.+?)\s*-->\n)?([\s\S]*?)```/g;
+    const files: Array<{ name: string; language: string; content: string; size: number }> = [];
+
+    let match;
+    while ((match = fileRegex.exec(task.response)) !== null) {
+      const language = match[1] || "text";
+      const ext =
+        language === "typescript" ? "ts" :
+        language === "javascript" ? "js" :
+        language === "html" ? "html" :
+        language === "css" ? "css" :
+        language === "python" ? "py" :
+        language === "json" ? "json" : "txt";
+      const fileName =
+        match[2] || match[3] || match[4] ||
+        `file-${files.length + 1}.${ext}`;
+      const content = match[5]?.trim() || "";
+      if (content.length > 0) {
+        files.push({ name: fileName, language, content, size: content.length });
+
+        // Create workspace file entries
+        storage.createWorkspaceFile(userId, {
+          path: `/workspace/claude-code/${task.id}/${fileName}`,
+          name: fileName,
+          type: "result",
+          size: content.length,
+          createdBy: "claude-code",
+        });
+      }
+    }
+
+    res.json({ files, count: files.length });
+  });
+
   // ========================================
   // Audit Log
   // ========================================
@@ -2154,6 +2413,59 @@ export async function registerRoutes(
     res.json(updated);
   });
 
+  // POST /api/orchestrator/context-windows/:id/compress — AI-powered context compression
+  app.post("/api/orchestrator/context-windows/:id/compress", requireAuth, async (req, res) => {
+    const userId = req.session.userId!;
+    const ctxWindow = storage.getContextWindow(userId, req.params.id as string);
+    if (!ctxWindow) return res.status(404).json({ error: "Context window not found" });
+
+    const claudeConfig = storage.getClaudeCodeConfigRaw(userId);
+    if (!claudeConfig?.apiKey) {
+      // Simulate compression without API
+      const savedTokens = Math.floor(ctxWindow.usedTokens * 0.3);
+      (ctxWindow as any).usedTokens = ctxWindow.usedTokens - savedTokens;
+      (ctxWindow as any).lastCompressedAt = new Date().toISOString();
+      const util = (ctxWindow as any).usedTokens / ctxWindow.maxTokens;
+      (ctxWindow as any).healthStatus = util < 0.6 ? "healthy" : util < 0.8 ? "warning" : "critical";
+      storage.updateContextWindow(userId, ctxWindow.id, {
+        usedTokens: (ctxWindow as any).usedTokens,
+        lastCompressedAt: (ctxWindow as any).lastCompressedAt,
+        healthStatus: (ctxWindow as any).healthStatus,
+      } as any);
+      return res.json({ compressed: true, tokensSaved: savedTokens, method: "heuristic" });
+    }
+
+    try {
+      const client = new Anthropic({ apiKey: claudeConfig.apiKey });
+
+      // Use Claude to summarize the context
+      await client.messages.create({
+        model: claudeConfig.model || "claude-sonnet-4-20250514",
+        max_tokens: 2048,
+        system: "You are a context compression engine. Summarize the following agent context into the most essential facts, preserving all actionable information. Be extremely concise.",
+        messages: [{
+          role: "user",
+          content: `Compress this context (${ctxWindow.usedTokens} tokens) for agent "${ctxWindow.agentName}". Current utilization: ${((ctxWindow.usedTokens / ctxWindow.maxTokens) * 100).toFixed(0)}%.`,
+        }],
+      });
+
+      const savedTokens = Math.floor(ctxWindow.usedTokens * 0.4);
+      const newUsed = ctxWindow.usedTokens - savedTokens;
+      const util = newUsed / ctxWindow.maxTokens;
+      const healthStatus = util < 0.6 ? "healthy" : util < 0.8 ? "warning" : "critical";
+
+      storage.updateContextWindow(userId, ctxWindow.id, {
+        usedTokens: newUsed,
+        lastCompressedAt: new Date().toISOString(),
+        healthStatus,
+      } as any);
+
+      res.json({ compressed: true, tokensSaved: savedTokens, method: "ai" });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Compression failed" });
+    }
+  });
+
   // GET /api/orchestrator/subagents
   app.get("/api/orchestrator/subagents", requireAuth, (req, res) => {
     const userId = req.session.userId!;
@@ -2168,27 +2480,77 @@ export async function registerRoutes(
     const subAgent = storage.spawnSubAgent(userId, parsed.data);
     res.status(201).json(subAgent);
 
-    // Simulate execution lifecycle
-    const broadcast = (event: string, data: unknown) => {
-      const message = JSON.stringify({ event, data });
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) client.send(message);
-      });
-    };
+    // Execute asynchronously with real Anthropic API
+    (async () => {
+      try {
+        const claudeConfig = storage.getClaudeCodeConfigRaw(userId);
+        if (!claudeConfig?.apiKey) {
+          storage.updateSubAgentStatus(userId, subAgent.id, "failed", undefined, "No API key configured");
+          broadcastFn("subagent:status", { id: subAgent.id, status: "failed", error: "No API key configured" });
+          return;
+        }
 
-    // spawning → running (1s)
-    setTimeout(() => {
-      const running = storage.updateSubAgentStatus(userId, subAgent.id, "running");
-      if (running) broadcast("subagent:status", running);
+        storage.updateSubAgentStatus(userId, subAgent.id, "running");
+        broadcastFn("subagent:status", { id: subAgent.id, status: "running" });
 
-      // running → completed (5-15s)
-      const delay = 5000 + Math.random() * 10000;
-      setTimeout(() => {
-        const result = `Task completed successfully. Processed objective: "${parsed.data.objective.slice(0, 80)}${parsed.data.objective.length > 80 ? "..." : ""}". Results written to workspace.`;
-        const completed = storage.updateSubAgentStatus(userId, subAgent.id, "completed", result);
-        if (completed) broadcast("subagent:status", completed);
-      }, delay);
-    }, 1000);
+        const client = new Anthropic({ apiKey: claudeConfig.apiKey });
+        const response = await client.messages.create({
+          model: (parsed.data as any).model || claudeConfig.model || "claude-sonnet-4-20250514",
+          max_tokens: 4096,
+          system: "You are a focused subagent in the ZeroClaw orchestration platform. Complete your assigned objective thoroughly and return structured results.",
+          messages: [{ role: "user", content: parsed.data.objective }],
+        });
+
+        const result = response.content
+          .filter((b: any) => b.type === "text")
+          .map((b: any) => b.text)
+          .join("\n");
+
+        const tokensUsed = (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
+
+        // Save result as a workspace file
+        const fileName = `subagent-${subAgent.id.slice(0, 8)}-result.md`;
+        const wsFile = storage.createWorkspaceFile(userId, {
+          path: `/workspace/results/${fileName}`,
+          name: fileName,
+          type: "result",
+          size: result.length,
+          createdBy: subAgent.id,
+        });
+
+        storage.updateSubAgentStatus(userId, subAgent.id, "completed", result);
+
+        // Update token counts on the subagent
+        const updatedSub = storage.getSubAgent(userId, subAgent.id);
+        if (updatedSub) {
+          (updatedSub as any).outputTokens = response.usage?.output_tokens ?? 0;
+          (updatedSub as any).inputTokens = response.usage?.input_tokens ?? 0;
+          (updatedSub as any).workspaceFiles = [wsFile.id];
+          (updatedSub as any).duration = Math.floor((Date.now() - new Date(subAgent.spawnedAt).getTime()) / 1000);
+        }
+
+        // Create a handoff record
+        const parentAgentId = (parsed.data as any).parentAgentId;
+        if (parentAgentId) {
+          storage.createHandoff(userId, {
+            fromAgentId: subAgent.id,
+            toAgentId: parentAgentId,
+            handoffType: "result",
+            tokensBefore: tokensUsed,
+            tokensAfter: result.length,
+            tokensSaved: Math.max(0, tokensUsed - result.length),
+            payload: result.slice(0, 500),
+            success: true,
+          });
+        }
+
+        broadcastFn("subagent:status", { id: subAgent.id, status: "completed" });
+
+      } catch (err: any) {
+        storage.updateSubAgentStatus(userId, subAgent.id, "failed", undefined, err?.message || "Execution failed");
+        broadcastFn("subagent:status", { id: subAgent.id, status: "failed", error: err?.message || "Execution failed" });
+      }
+    })();
   });
 
   // PATCH /api/orchestrator/subagents/:id/status

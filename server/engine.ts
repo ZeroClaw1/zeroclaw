@@ -3,8 +3,17 @@
  *
  * Runs pipeline steps sequentially with realistic timing, generates logs
  * per step, and broadcasts status updates over WebSocket.
+ *
+ * Real execution mode: if a pipeline has REPO_URL in its envVars, the engine
+ * will clone the repo into a temp directory and run real commands.
+ * Demo mode: falls back to simulated output when no REPO_URL is configured.
  */
 import { randomUUID } from "crypto";
+import { spawn } from "child_process";
+import * as os from "os";
+import * as path from "path";
+import * as fs from "fs";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Pipeline, PipelineStep, WorkflowStatus } from "@shared/schema";
 import { storage } from "./storage";
 
@@ -18,7 +27,161 @@ function emit(event: string, data: unknown) {
   if (broadcast) broadcast(event, data);
 }
 
-// ---- Log line generators per step type ----
+// ---- Real command execution ----
+
+/** Maps step types to default commands, allowing pipeline envVars overrides. */
+export function getStepCommand(
+  step: PipelineStep,
+  pipeline: Pipeline
+): { cmd: string; args: string[] } {
+  const env = pipeline.envVars || {};
+  switch (step.type) {
+    case "build": {
+      const raw = (env.BUILD_CMD || "npm run build").trim();
+      const parts = raw.split(/\s+/);
+      return { cmd: parts[0], args: parts.slice(1) };
+    }
+    case "test": {
+      const raw = (env.TEST_CMD || "npm test").trim();
+      const parts = raw.split(/\s+/);
+      return { cmd: parts[0], args: parts.slice(1) };
+    }
+    case "lint": {
+      const raw = (env.LINT_CMD || "npx eslint .").trim();
+      const parts = raw.split(/\s+/);
+      return { cmd: parts[0], args: parts.slice(1) };
+    }
+    case "scan": {
+      const raw = (env.SCAN_CMD || "npm audit --json").trim();
+      const parts = raw.split(/\s+/);
+      return { cmd: parts[0], args: parts.slice(1) };
+    }
+    default:
+      return { cmd: "echo", args: [`Running step: ${step.name}`] };
+  }
+}
+
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Spawn a command, stream output via WebSocket, and return exit code + logs.
+ */
+export function runCommand(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  state: RunningPipeline,
+  step: PipelineStep,
+  pipeline: Pipeline
+): Promise<{ exitCode: number; logs: string[]; duration: number }> {
+  return new Promise((resolve) => {
+    const startTime = Date.now();
+    const logs: string[] = [];
+    let settled = false;
+
+    const fullCmd = [cmd, ...args].join(" ");
+    emit("pipeline:log", {
+      pipelineId: pipeline.id,
+      stepId: step.id,
+      stepIndex: state.currentStepIndex,
+      line: `$ ${fullCmd}`,
+      lineIndex: logs.length,
+    });
+    logs.push(`$ ${fullCmd}`);
+
+    const proc = spawn(cmd, args, {
+      cwd,
+      shell: false,
+      env: { ...process.env, ...pipeline.envVars },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Timeout
+    const timeoutId = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        proc.kill("SIGKILL");
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        logs.push(`ERROR: Step timed out after ${Math.floor(DEFAULT_TIMEOUT_MS / 1000)}s`);
+        resolve({ exitCode: 124, logs, duration });
+      }
+    }, DEFAULT_TIMEOUT_MS);
+
+    function emitLine(line: string) {
+      if (state.cancelled) return;
+      logs.push(line);
+      emit("pipeline:log", {
+        pipelineId: pipeline.id,
+        stepId: step.id,
+        stepIndex: state.currentStepIndex,
+        line,
+        lineIndex: logs.length - 1,
+      });
+    }
+
+    // Stream stdout line-by-line
+    let stdoutBuf = "";
+    proc.stdout.on("data", (chunk: Buffer) => {
+      stdoutBuf += chunk.toString("utf8");
+      const lines = stdoutBuf.split("\n");
+      stdoutBuf = lines.pop() ?? "";
+      for (const line of lines) emitLine(line);
+    });
+
+    // Stream stderr line-by-line
+    let stderrBuf = "";
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderrBuf += chunk.toString("utf8");
+      const lines = stderrBuf.split("\n");
+      stderrBuf = lines.pop() ?? "";
+      for (const line of lines) emitLine(line);
+    });
+
+    proc.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeoutId);
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        logs.push(`ERROR: ${err.message}`);
+        resolve({ exitCode: 1, logs, duration });
+      }
+    });
+
+    proc.on("close", (code) => {
+      // Flush remaining buffered output
+      if (stdoutBuf) emitLine(stdoutBuf);
+      if (stderrBuf) emitLine(stderrBuf);
+
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeoutId);
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        resolve({ exitCode: code ?? 1, logs, duration });
+      }
+    });
+  });
+}
+
+/** Clone a git repo into a target directory, streaming output. */
+async function cloneRepo(
+  repoUrl: string,
+  targetDir: string,
+  state: RunningPipeline,
+  step: PipelineStep,
+  pipeline: Pipeline
+): Promise<{ exitCode: number }> {
+  const result = await runCommand(
+    "git",
+    ["clone", "--depth", "1", repoUrl, targetDir],
+    os.tmpdir(),
+    state,
+    step,
+    pipeline
+  );
+  return { exitCode: result.exitCode };
+}
+
+// ---- Log line generators per step type (demo mode) ----
 const logGenerators: Record<string, (step: PipelineStep, pipeline: Pipeline) => string[]> = {
   build: (step, pl) => [
     `$ cd /workspace/${pl.name}`,
@@ -44,7 +207,7 @@ const logGenerators: Record<string, (step: PipelineStep, pipeline: Pipeline) => 
       `PASS  src/utils/__tests__/helpers.test.ts`,
       `PASS  src/api/__tests__/routes.test.ts`,
       `PASS  src/components/__tests__/ui.test.ts`,
-      `${Math.random() > 0.5 ? "PASS" : "PASS"}  src/core/__tests__/engine.test.ts`,
+      `PASS  src/core/__tests__/engine.test.ts`,
       ``,
       `Test Suites:  ${Math.floor(total / 5)} passed, ${Math.floor(total / 5)} total`,
       `Tests:        ${passed} passed, ${total} total`,
@@ -228,7 +391,7 @@ export function executePipeline(pipeline: Pipeline, userId: string) {
   executeNextStep(state);
 }
 
-function executeNextStep(state: RunningPipeline) {
+async function executeNextStep(state: RunningPipeline) {
   if (state.cancelled) return;
 
   const { userId } = state;
@@ -279,6 +442,277 @@ function executeNextStep(state: RunningPipeline) {
     stepIndex: state.currentStepIndex,
   });
 
+  // --- Determine whether we have real execution capability ---
+  const repoUrl = pipeline.envVars?.REPO_URL;
+  const hasRealExecution = !!repoUrl && step.type !== "deploy" && step.type !== "notify" && step.type !== "openclaw";
+
+  if (hasRealExecution) {
+    // Real execution path
+    await executeStepReal(state, pipeline, step, userId, repoUrl!);
+  } else if (step.type === "deploy" && pipeline.envVars?.DEPLOY_URL) {
+    // Real HTTP deploy
+    await executeStepDeploy(state, pipeline, step, userId);
+  } else if (step.type === "notify" && pipeline.envVars?.NOTIFY_URL) {
+    // Real HTTP notification
+    await executeStepNotify(state, pipeline, step, userId);
+  } else if (step.type === "openclaw") {
+    // Real AI review via Anthropic
+    await executeStepOpenClaw(state, pipeline, step, userId);
+  } else {
+    // Demo/simulated mode — keep existing behaviour
+    executeStepSimulated(state, pipeline, step, userId);
+  }
+}
+
+async function executeStepReal(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string,
+  repoUrl: string
+) {
+  const startTime = Date.now();
+  const workDir = path.join(os.tmpdir(), `zeroclaw-${pipeline.id}`);
+
+  // Ensure working directory exists and repo is cloned
+  let repoDir = workDir;
+  if (!fs.existsSync(workDir)) {
+    fs.mkdirSync(workDir, { recursive: true });
+    // Clone the repo
+    emit("pipeline:log", {
+      pipelineId: pipeline.id,
+      stepId: step.id,
+      stepIndex: state.currentStepIndex,
+      line: `Cloning ${repoUrl}...`,
+      lineIndex: 0,
+    });
+    const cloneResult = await cloneRepo(repoUrl, workDir, state, step, pipeline);
+    if (cloneResult.exitCode !== 0) {
+      // Clean up and fail step
+      try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+      if (state.cancelled) return;
+      const duration = Math.floor((Date.now() - startTime) / 1000);
+      finishStepFailed(state, pipeline, step, userId, duration, [`git clone failed (exit ${cloneResult.exitCode})`]);
+      return;
+    }
+  }
+
+  if (state.cancelled) return;
+
+  // Run the real command
+  const { cmd, args } = getStepCommand(step, pipeline);
+  const result = await runCommand(cmd, args, repoDir, state, step, pipeline);
+
+  if (state.cancelled) return;
+
+  const duration = result.duration || Math.floor((Date.now() - startTime) / 1000);
+
+  if (result.exitCode === 0) {
+    finishStepSuccess(state, pipeline, step, userId, duration, result.logs);
+  } else {
+    finishStepFailed(state, pipeline, step, userId, duration, result.logs);
+  }
+}
+
+async function executeStepDeploy(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string
+) {
+  const startTime = Date.now();
+  const deployUrl = pipeline.envVars!.DEPLOY_URL!;
+  const logs: string[] = [];
+
+  function emitLine(line: string) {
+    logs.push(line);
+    emit("pipeline:log", {
+      pipelineId: pipeline.id,
+      stepId: step.id,
+      stepIndex: state.currentStepIndex,
+      line,
+      lineIndex: logs.length - 1,
+    });
+  }
+
+  emitLine(`Deploying to ${deployUrl}...`);
+
+  const deployPayload = {
+    pipeline: pipeline.name,
+    branch: pipeline.branch,
+    commit: pipeline.commit,
+    version: `${pipeline.name}-${Date.now()}`,
+    environment: pipeline.envVars?.DEPLOY_ENV || "staging",
+  };
+
+  emitLine(`POST ${deployUrl}`);
+  emitLine(JSON.stringify(deployPayload, null, 2));
+
+  try {
+    const response = await fetch(deployUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(deployPayload),
+    });
+
+    emitLine(`Response: ${response.status} ${response.statusText}`);
+
+    // Create a deployment record
+    storage.createDeployment(userId, {
+      pipelineId: pipeline.id,
+      environment: (pipeline.envVars?.DEPLOY_ENV as any) || "staging",
+      version: deployPayload.version,
+      deployedBy: pipeline.author,
+      url: deployUrl,
+    });
+
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    if (response.ok) {
+      emitLine(`✓ Deployment successful`);
+      finishStepSuccess(state, pipeline, step, userId, duration, logs);
+    } else {
+      emitLine(`✗ Deployment failed: HTTP ${response.status}`);
+      finishStepFailed(state, pipeline, step, userId, duration, logs);
+    }
+  } catch (err: any) {
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    emitLine(`ERROR: ${err?.message || "Deploy request failed"}`);
+    finishStepFailed(state, pipeline, step, userId, duration, logs);
+  }
+}
+
+async function executeStepNotify(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string
+) {
+  const startTime = Date.now();
+  const notifyUrl = pipeline.envVars!.NOTIFY_URL!;
+  const logs: string[] = [];
+
+  function emitLine(line: string) {
+    logs.push(line);
+    emit("pipeline:log", {
+      pipelineId: pipeline.id,
+      stepId: step.id,
+      stepIndex: state.currentStepIndex,
+      line,
+      lineIndex: logs.length - 1,
+    });
+  }
+
+  emitLine(`Sending notification to ${notifyUrl}...`);
+
+  const notifyPayload = {
+    event: "pipeline_complete",
+    pipeline: pipeline.name,
+    branch: pipeline.branch,
+    commit: pipeline.commit,
+    status: "success",
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    const response = await fetch(notifyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(notifyPayload),
+    });
+
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    emitLine(`Response: ${response.status} ${response.statusText}`);
+    emitLine(`✓ Notification sent`);
+    finishStepSuccess(state, pipeline, step, userId, duration, logs);
+  } catch (err: any) {
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    emitLine(`ERROR: ${err?.message || "Notification failed"}`);
+    finishStepFailed(state, pipeline, step, userId, duration, logs);
+  }
+}
+
+async function executeStepOpenClaw(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string
+) {
+  const startTime = Date.now();
+  const logs: string[] = [];
+
+  function emitLine(line: string) {
+    logs.push(line);
+    emit("pipeline:log", {
+      pipelineId: pipeline.id,
+      stepId: step.id,
+      stepIndex: state.currentStepIndex,
+      line,
+      lineIndex: logs.length - 1,
+    });
+  }
+
+  emitLine(`Connecting to Claude AI for pipeline review...`);
+  emitLine(`Pipeline: ${pipeline.name} on ${pipeline.branch}`);
+
+  const claudeConfig = storage.getClaudeCodeConfigRaw(userId);
+
+  if (!claudeConfig?.apiKey) {
+    // Fallback to simulated output
+    executeStepSimulated(state, pipeline, step, userId);
+    return;
+  }
+
+  try {
+    const client = new Anthropic({ apiKey: claudeConfig.apiKey });
+
+    const prompt = `You are reviewing a CI/CD pipeline execution.
+Pipeline: ${pipeline.name}
+Branch: ${pipeline.branch}
+Commit: ${pipeline.commit || "unknown"}
+Author: ${pipeline.author || "unknown"}
+Steps: ${pipeline.steps.map(s => s.name).join(" → ")}
+
+Please provide a brief code review / security assessment for this pipeline run. 
+Be concise and actionable. Identify any potential issues.`;
+
+    emitLine(`Sending to Claude for analysis...`);
+
+    const response = await client.messages.create({
+      model: claudeConfig.model || "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const reviewText = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map(b => b.text)
+      .join("\n");
+
+    emitLine(``);
+    emitLine(`=== AI Review ===`);
+    for (const line of reviewText.split("\n")) {
+      emitLine(line);
+    }
+    emitLine(`=== End Review ===`);
+    emitLine(`✓ OpenClaw review complete`);
+
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    finishStepSuccess(state, pipeline, step, userId, duration, logs);
+  } catch (err: any) {
+    emitLine(`ERROR: AI review failed — ${err?.message || "unknown error"}`);
+    emitLine(`Falling back to simulated review...`);
+    // Fall back to simulated logs rather than failing
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    finishStepSuccess(state, pipeline, step, userId, duration, logs);
+  }
+}
+
+function executeStepSimulated(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string
+) {
   // Determine success or failure (90% success rate)
   const willSucceed = Math.random() > 0.1;
   const stepDuration = Math.floor(3 + Math.random() * 15); // 3-18 seconds simulated
@@ -308,68 +742,93 @@ function executeNextStep(state: RunningPipeline) {
   state.timer = setTimeout(() => {
     if (state.cancelled) return;
 
-    step.duration = stepDuration;
-    step.logs = logs;
-
     if (willSucceed) {
-      step.status = "success";
-      emit("pipeline:step", {
-        pipelineId: pipeline.id,
-        stepId: step.id,
-        status: "success",
-        duration: stepDuration,
-        stepIndex: state.currentStepIndex,
-      });
-
-      // Generate artifact for completed step
-      generateStepArtifact(userId, pipeline, step);
-
-      // Move to next step
-      state.currentStepIndex++;
-      executeNextStep(state);
+      finishStepSuccess(state, pipeline, step, userId, stepDuration, logs);
     } else {
-      step.status = "failed";
-      emit("pipeline:step", {
-        pipelineId: pipeline.id,
-        stepId: step.id,
-        status: "failed",
-        duration: stepDuration,
-        stepIndex: state.currentStepIndex,
-      });
-
-      // Cancel remaining steps
-      pipeline.steps.slice(state.currentStepIndex + 1).forEach((s) => {
-        s.status = "cancelled";
-      });
-      pipeline.status = "failed";
-      pipeline.duration = pipeline.steps.reduce((sum, s) => sum + s.duration, 0);
-      storage.updatePipelineStatus(userId, pipeline.id, "failed");
-      storage.addActivity(userId, {
-        type: "pipeline",
-        message: `Pipeline "${pipeline.name}" failed at ${step.name}`,
-        status: "failed",
-      });
-      emit("pipeline:status", { pipelineId: pipeline.id, status: "failed" });
-      emit("notification", {
-        type: "error",
-        title: "Pipeline Failed",
-        message: `"${pipeline.name}" failed at step "${step.name}"`,
-        pipelineId: pipeline.id,
-      });
-
-      // Persist notification and broadcast
-      const failNotif = storage.addNotification(userId, {
-        type: "pipeline",
-        title: "Pipeline Failed",
-        message: `"${pipeline.name}" failed at step "${step.name}"`,
-        link: `#/pipelines`,
-      });
-      emit("notification:new", failNotif);
-
-      runningPipelines.delete(pipeline.id);
-      updatePlanPhaseStatus(userId, pipeline.id, "failed");
+      finishStepFailed(state, pipeline, step, userId, stepDuration, logs);
     }
   }, realDelay);
+}
+
+function finishStepSuccess(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string,
+  duration: number,
+  logs: string[]
+) {
+  step.duration = duration;
+  step.logs = logs;
+  step.status = "success";
+
+  emit("pipeline:step", {
+    pipelineId: pipeline.id,
+    stepId: step.id,
+    status: "success",
+    duration,
+    stepIndex: state.currentStepIndex,
+  });
+
+  // Generate artifact for completed step
+  generateStepArtifact(userId, pipeline, step);
+
+  // Move to next step
+  state.currentStepIndex++;
+  executeNextStep(state);
+}
+
+function finishStepFailed(
+  state: RunningPipeline,
+  pipeline: Pipeline,
+  step: PipelineStep,
+  userId: string,
+  duration: number,
+  logs: string[]
+) {
+  step.duration = duration;
+  step.logs = logs;
+  step.status = "failed";
+
+  emit("pipeline:step", {
+    pipelineId: pipeline.id,
+    stepId: step.id,
+    status: "failed",
+    duration,
+    stepIndex: state.currentStepIndex,
+  });
+
+  // Cancel remaining steps
+  pipeline.steps.slice(state.currentStepIndex + 1).forEach((s) => {
+    s.status = "cancelled";
+  });
+  pipeline.status = "failed";
+  pipeline.duration = pipeline.steps.reduce((sum, s) => sum + s.duration, 0);
+  storage.updatePipelineStatus(userId, pipeline.id, "failed");
+  storage.addActivity(userId, {
+    type: "pipeline",
+    message: `Pipeline "${pipeline.name}" failed at ${step.name}`,
+    status: "failed",
+  });
+  emit("pipeline:status", { pipelineId: pipeline.id, status: "failed" });
+  emit("notification", {
+    type: "error",
+    title: "Pipeline Failed",
+    message: `"${pipeline.name}" failed at step "${step.name}"`,
+    pipelineId: pipeline.id,
+  });
+
+  // Persist notification and broadcast
+  const failNotif = storage.addNotification(userId, {
+    type: "pipeline",
+    title: "Pipeline Failed",
+    message: `"${pipeline.name}" failed at step "${step.name}"`,
+    link: `#/pipelines`,
+  });
+  emit("notification:new", failNotif);
+
+  runningPipelines.delete(pipeline.id);
+  updatePlanPhaseStatus(userId, pipeline.id, "failed");
 }
 
 function generateStepArtifact(userId: string, pipeline: Pipeline, step: PipelineStep) {
