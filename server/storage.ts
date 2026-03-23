@@ -71,6 +71,8 @@ import {
   dbDeleteMemoryEntry,
   dbGetHandoffs,
   dbInsertHandoff,
+  dbGetOpenCodeConfig,
+  dbUpsertOpenCodeConfig,
 } from "./db";
 import type {
   Pipeline, InsertPipeline, PipelineStep,
@@ -100,6 +102,9 @@ import type {
   UpdateClaudeCodeConfig,
   CodingTask,
   SubmitCodingTask,
+  OpenCodeConfig,
+  UpdateOpenCodeConfig,
+  CodingEngine,
   Team,
   TeamMember,
   TeamInvite,
@@ -246,6 +251,12 @@ export interface IStorage {
   deleteCodingTask(userId: string, taskId: string): boolean;
   incrementClaudeCodeTokens(userId: string, tokens: number): void;
 
+  // OpenCode
+  getOpenCodeConfig(userId: string): OpenCodeConfig | null;
+  getOpenCodeConfigRaw(userId: string): OpenCodeConfig | null;
+  updateOpenCodeConfig(userId: string, data: UpdateOpenCodeConfig): OpenCodeConfig;
+  incrementOpenCodeTokens(userId: string, tokens: number): void;
+
   // Audit Log
   addAuditLog(userId: string, entry: Omit<AuditLogEntry, "id" | "timestamp">): AuditLogEntry;
   getAuditLog(userId: string, options?: { resource?: string; action?: string; limit?: number }): AuditLogEntry[];
@@ -361,6 +372,7 @@ export class MemStorage implements IStorage {
 
   // Claude Code data (per-user)
   private claudeCodeConfigs: Map<string, ClaudeCodeConfig> = new Map();
+  private openCodeConfigs: Map<string, OpenCodeConfig> = new Map();
   private codingTasks: Map<string, CodingTask[]> = new Map();
 
   // Vault / Context data (per-user)
@@ -526,6 +538,12 @@ export class MemStorage implements IStorage {
           const cc = await dbGetClaudeCodeConfig(userId);
           if (cc) {
             this.claudeCodeConfigs.set(userId, cc);
+          }
+
+          // OpenCode config
+          const ocCode = await dbGetOpenCodeConfig(userId);
+          if (ocCode) {
+            this.openCodeConfigs.set(userId, ocCode);
           }
 
           // Coding tasks
@@ -2052,14 +2070,18 @@ export class MemStorage implements IStorage {
   }
 
   submitCodingTask(userId: string, task: SubmitCodingTask): CodingTask {
-    const config = this.claudeCodeConfigs.get(userId);
+    const engine: CodingEngine = task.engine || "claude_code";
+    const config = engine === "opencode"
+      ? this.openCodeConfigs.get(userId)
+      : this.claudeCodeConfigs.get(userId);
     const id = `ctask-${randomUUID().slice(0, 8)}`;
     const codingTask: CodingTask = {
       id,
       title: task.title,
       prompt: task.prompt,
       status: "queued",
-      model: config?.model || "claude-sonnet-4-20250514",
+      engine,
+      model: config?.model || (engine === "opencode" ? "gpt-4o" : "claude-sonnet-4-20250514"),
       response: null,
       tokensUsed: 0,
       contextNotes: task.contextNoteIds || [],
@@ -2076,10 +2098,20 @@ export class MemStorage implements IStorage {
     this.persist("codingTask", () => dbUpsertCodingTask(userId, codingTask));
 
     // Update config stats
-    if (config) {
-      config.totalTasks += 1;
-      config.lastUsed = new Date().toISOString();
-      this.persist("claudeCodeConfig", () => dbUpsertClaudeCodeConfig(userId, config!));
+    if (engine === "opencode") {
+      const ocConfig = this.openCodeConfigs.get(userId);
+      if (ocConfig) {
+        ocConfig.totalTasks += 1;
+        ocConfig.lastUsed = new Date().toISOString();
+        this.persist("openCodeConfig", () => dbUpsertOpenCodeConfig(userId, ocConfig));
+      }
+    } else {
+      const ccConfig = this.claudeCodeConfigs.get(userId);
+      if (ccConfig) {
+        ccConfig.totalTasks += 1;
+        ccConfig.lastUsed = new Date().toISOString();
+        this.persist("claudeCodeConfig", () => dbUpsertClaudeCodeConfig(userId, ccConfig!));
+      }
     }
 
     return codingTask;
@@ -2109,6 +2141,56 @@ export class MemStorage implements IStorage {
     if (config) {
       config.totalTokensUsed += tokens;
       this.persist("claudeCodeConfig", () => dbUpsertClaudeCodeConfig(userId, config));
+    }
+  }
+
+  // ---- OpenCode ----
+  getOpenCodeConfig(userId: string): OpenCodeConfig | null {
+    return this.openCodeConfigs.get(userId) ?? null;
+  }
+
+  getOpenCodeConfigRaw(userId: string): OpenCodeConfig | null {
+    return this.openCodeConfigs.get(userId) ?? null;
+  }
+
+  updateOpenCodeConfig(userId: string, data: UpdateOpenCodeConfig): OpenCodeConfig {
+    let config = this.openCodeConfigs.get(userId);
+    if (!config) {
+      config = {
+        id: `oc-${randomUUID().slice(0, 8)}`,
+        provider: "openai",
+        apiKey: "",
+        baseUrl: "",
+        model: "gpt-4o",
+        maxTokens: 8192,
+        status: "disconnected",
+        lastUsed: null,
+        totalTasks: 0,
+        totalTokensUsed: 0,
+        useObsidianContext: false,
+        systemPrompt: "",
+      };
+      this.openCodeConfigs.set(userId, config);
+    }
+    if (data.provider !== undefined) config.provider = data.provider;
+    if (data.apiKey !== undefined) {
+      config.apiKey = data.apiKey;
+      config.status = data.apiKey ? "connected" : "disconnected";
+    }
+    if (data.baseUrl !== undefined) config.baseUrl = data.baseUrl;
+    if (data.model !== undefined) config.model = data.model;
+    if (data.maxTokens !== undefined) config.maxTokens = data.maxTokens;
+    if (data.useObsidianContext !== undefined) config.useObsidianContext = data.useObsidianContext;
+    if (data.systemPrompt !== undefined) config.systemPrompt = data.systemPrompt;
+    this.persist("openCodeConfig", () => dbUpsertOpenCodeConfig(userId, config!));
+    return { ...config };
+  }
+
+  incrementOpenCodeTokens(userId: string, tokens: number): void {
+    const config = this.openCodeConfigs.get(userId);
+    if (config) {
+      config.totalTokensUsed += tokens;
+      this.persist("openCodeConfig", () => dbUpsertOpenCodeConfig(userId, config));
     }
   }
 

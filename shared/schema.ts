@@ -684,9 +684,12 @@ export interface ContextSession {
   status: "active" | "idle" | "expired";
 }
 
+// ---- Coding Engine (shared across Claude Code + OpenCode) ----
+export type CodingEngine = "claude_code" | "opencode";
+export type CodingTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
 // ---- Claude Code Integration ----
 export type ClaudeCodeStatus = "connected" | "disconnected" | "error";
-export type CodingTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ClaudeAuthMethod = "api_key" | "oauth_token";
 
 export interface ClaudeCodeConfig {
@@ -710,6 +713,7 @@ export interface CodingTask {
   title: string;
   prompt: string;
   status: CodingTaskStatus;
+  engine: CodingEngine;
   model: string;
   response: string | null;
   tokensUsed: number;
@@ -734,9 +738,40 @@ export type UpdateClaudeCodeConfig = z.infer<typeof updateClaudeCodeConfigSchema
 export const submitCodingTaskSchema = z.object({
   title: z.string().min(1, "Title is required"),
   prompt: z.string().min(1, "Prompt is required"),
+  engine: z.enum(["claude_code", "opencode"]).optional().default("claude_code"),
   contextNoteIds: z.array(z.string()).optional(),
 });
 export type SubmitCodingTask = z.infer<typeof submitCodingTaskSchema>;
+
+// ---- OpenCode Integration ----
+export type OpenCodeProvider = "anthropic" | "openai" | "google" | "openrouter" | "ollama" | "custom";
+export type OpenCodeStatus = "connected" | "disconnected" | "error";
+
+export interface OpenCodeConfig {
+  id: string;
+  provider: OpenCodeProvider;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  maxTokens: number;
+  status: OpenCodeStatus;
+  lastUsed: string | null;
+  totalTasks: number;
+  totalTokensUsed: number;
+  useObsidianContext: boolean;
+  systemPrompt: string;
+}
+
+export const updateOpenCodeConfigSchema = z.object({
+  provider: z.enum(["anthropic", "openai", "google", "openrouter", "ollama", "custom"]).optional(),
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  model: z.string().optional(),
+  maxTokens: z.number().min(256).max(128000).optional(),
+  useObsidianContext: z.boolean().optional(),
+  systemPrompt: z.string().optional(),
+});
+export type UpdateOpenCodeConfig = z.infer<typeof updateOpenCodeConfigSchema>;
 
 export const updateVaultConfigSchema = z.object({
   vaultPath: z.string().optional(),

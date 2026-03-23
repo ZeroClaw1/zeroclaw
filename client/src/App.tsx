@@ -23,6 +23,7 @@ import WebhooksPage from "@/pages/webhooks";
 import MarketplacePage from "@/pages/marketplace";
 import ContextPage from "@/pages/context";
 import ClaudeCodePage from "@/pages/claude-code";
+import CodingAgentsPage from "@/pages/coding-agents";
 import AuditLogPage from "@/pages/audit-log";
 import TeamsPage from "@/pages/teams";
 import AdminOverviewPage from "@/pages/admin/admin-overview";
@@ -56,6 +57,7 @@ function AppRouter() {
       <Route path="/webhooks" component={WebhooksPage} />
       <Route path="/marketplace" component={MarketplacePage} />
       <Route path="/context" component={ContextPage} />
+      <Route path="/coding-agents" component={CodingAgentsPage} />
       <Route path="/claude-code" component={ClaudeCodePage} />
       <Route path="/audit-log" component={AuditLogPage} />
       <Route path="/teams" component={TeamsPage} />

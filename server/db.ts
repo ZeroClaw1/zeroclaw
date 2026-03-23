@@ -72,6 +72,7 @@ export async function ensureTables() {
       title TEXT NOT NULL,
       prompt TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'queued',
+      engine TEXT NOT NULL DEFAULT 'claude_code',
       model TEXT NOT NULL DEFAULT 'claude-sonnet-4-20250514',
       response TEXT,
       tokens_used INTEGER NOT NULL DEFAULT 0,
@@ -79,6 +80,25 @@ export async function ensureTables() {
       created_at TEXT NOT NULL,
       completed_at TEXT,
       error TEXT
+    );
+    -- Add engine column if missing (migration for existing tables)
+    ALTER TABLE coding_tasks ADD COLUMN IF NOT EXISTS engine TEXT NOT NULL DEFAULT 'claude_code';
+
+    -- OpenCode configs (one per user)
+    CREATE TABLE IF NOT EXISTS opencode_configs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL DEFAULT 'openai',
+      api_key TEXT NOT NULL DEFAULT '',
+      base_url TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT 'gpt-4o',
+      max_tokens INTEGER NOT NULL DEFAULT 8192,
+      status TEXT NOT NULL DEFAULT 'disconnected',
+      last_used TEXT,
+      total_tasks INTEGER NOT NULL DEFAULT 0,
+      total_tokens_used INTEGER NOT NULL DEFAULT 0,
+      use_obsidian_context BOOLEAN NOT NULL DEFAULT false,
+      system_prompt TEXT NOT NULL DEFAULT ''
     );
 
     -- Vault configs (one per user)
@@ -583,6 +603,7 @@ export async function dbGetCodingTasks(userId: string): Promise<any[]> {
     title: row.title,
     prompt: row.prompt,
     status: row.status,
+    engine: row.engine || "claude_code",
     model: row.model,
     response: row.response,
     tokensUsed: row.tokens_used,
@@ -597,12 +618,13 @@ export async function dbUpsertCodingTask(userId: string, task: any): Promise<voi
   if (!pool) return;
   await pool.query(
     `INSERT INTO coding_tasks
-       (id, user_id, title, prompt, status, model, response, tokens_used, context_notes, created_at, completed_at, error)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       (id, user_id, title, prompt, status, engine, model, response, tokens_used, context_notes, created_at, completed_at, error)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (id) DO UPDATE SET
        title = EXCLUDED.title,
        prompt = EXCLUDED.prompt,
        status = EXCLUDED.status,
+       engine = EXCLUDED.engine,
        model = EXCLUDED.model,
        response = EXCLUDED.response,
        tokens_used = EXCLUDED.tokens_used,
@@ -615,6 +637,7 @@ export async function dbUpsertCodingTask(userId: string, task: any): Promise<voi
       task.title,
       task.prompt,
       task.status,
+      task.engine || "claude_code",
       task.model,
       task.response,
       task.tokensUsed,
@@ -629,6 +652,68 @@ export async function dbUpsertCodingTask(userId: string, task: any): Promise<voi
 export async function dbDeleteCodingTask(userId: string, taskId: string): Promise<void> {
   if (!pool) return;
   await pool.query(`DELETE FROM coding_tasks WHERE id = $1 AND user_id = $2`, [taskId, userId]);
+}
+
+// ---- OpenCode Configs ----
+
+export async function dbGetOpenCodeConfig(userId: string): Promise<any | null> {
+  if (!pool) return null;
+  const result = await pool.query(
+    `SELECT * FROM opencode_configs WHERE user_id = $1`,
+    [userId]
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    provider: row.provider,
+    apiKey: row.api_key,
+    baseUrl: row.base_url,
+    model: row.model,
+    maxTokens: row.max_tokens,
+    status: row.status,
+    lastUsed: row.last_used,
+    totalTasks: row.total_tasks,
+    totalTokensUsed: row.total_tokens_used,
+    useObsidianContext: row.use_obsidian_context,
+    systemPrompt: row.system_prompt,
+  };
+}
+
+export async function dbUpsertOpenCodeConfig(userId: string, config: any): Promise<void> {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO opencode_configs
+       (id, user_id, provider, api_key, base_url, model, max_tokens, status, last_used, total_tasks, total_tokens_used, use_obsidian_context, system_prompt)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (id) DO UPDATE SET
+       provider = EXCLUDED.provider,
+       api_key = EXCLUDED.api_key,
+       base_url = EXCLUDED.base_url,
+       model = EXCLUDED.model,
+       max_tokens = EXCLUDED.max_tokens,
+       status = EXCLUDED.status,
+       last_used = EXCLUDED.last_used,
+       total_tasks = EXCLUDED.total_tasks,
+       total_tokens_used = EXCLUDED.total_tokens_used,
+       use_obsidian_context = EXCLUDED.use_obsidian_context,
+       system_prompt = EXCLUDED.system_prompt`,
+    [
+      config.id,
+      userId,
+      config.provider,
+      config.apiKey,
+      config.baseUrl,
+      config.model,
+      config.maxTokens,
+      config.status,
+      config.lastUsed,
+      config.totalTasks,
+      config.totalTokensUsed,
+      config.useObsidianContext,
+      config.systemPrompt,
+    ]
+  );
 }
 
 // ---- Vault Config ----

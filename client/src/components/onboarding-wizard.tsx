@@ -35,14 +35,14 @@ interface StepDef {
 const STEPS_BY_INTENT: Record<NonNullable<Intent>, StepDef[]> = {
   website: [
     { key: "welcome", label: "Welcome" },
-    { key: "claude_code", label: "Claude Code" },
+    { key: "coding_agents", label: "Coding Agents" },
     { key: "planning", label: "Plan" },
     { key: "deploy", label: "Deploy" },
     { key: "allset", label: "Done" },
   ],
   automate: [
     { key: "welcome", label: "Welcome" },
-    { key: "claude_code", label: "Claude Code" },
+    { key: "coding_agents", label: "Coding Agents" },
     { key: "agents", label: "Agents" },
     { key: "tasks", label: "Tasks" },
     { key: "allset", label: "Done" },
@@ -561,6 +561,65 @@ function AllSetStep() {
   );
 }
 
+/* ---- Step: Configure Coding Agents (replaces ClaudeCodeStep in intent paths) ---- */
+function ConfigureCodingAgentsStep({ onStepComplete }: { onStepComplete: () => void }) {
+  const [, navigate] = useLocation();
+
+  const handleGo = async () => {
+    try {
+      await apiRequest("POST", "/api/onboarding/step", { step: "firstAgentCreated" });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      onStepComplete();
+    } catch {
+      // best-effort
+    }
+    navigate("/coding-agents");
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="text-center">
+        <div className="inline-flex p-3 rounded-xl bg-accent/20 mb-3">
+          <Code2 className="h-8 w-8 text-accent" />
+        </div>
+        <h2 className="text-xl font-bold tracking-tight">Configure Coding Agents</h2>
+        <p className="text-xs text-muted-foreground mt-2 max-w-sm mx-auto leading-relaxed">
+          Connect Claude Code or OpenCode — run coding tasks with Anthropic, OpenAI, Google,
+          OpenRouter, Ollama, or any OpenAI-compatible provider.
+        </p>
+      </div>
+
+      <div className="max-w-sm mx-auto rounded-lg border border-accent/20 bg-accent/5 p-4 text-xs text-muted-foreground space-y-2 font-mono">
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 w-1.5 rounded-full bg-accent" />
+          <span>Configure Claude Code with your Anthropic API key</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 w-1.5 rounded-full bg-accent" />
+          <span>Or set up OpenCode with 75+ model providers</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="h-1.5 w-1.5 rounded-full bg-accent" />
+          <span>Submit tasks from the unified Tasks tab</span>
+        </div>
+      </div>
+
+      <div className="flex justify-center">
+        <Button
+          onClick={handleGo}
+          variant="outline"
+          className="text-xs gap-2 border-accent/30 hover:border-accent/60 hover:bg-accent/10"
+          data-testid="onboarding-go-coding-agents"
+        >
+          <Code2 className="h-3.5 w-3.5 text-accent" />
+          Go to Coding Agents
+          <ExternalLink className="h-3 w-3 opacity-70" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // ---- Step renderer ----
 // Steps: 0=Welcome+Intent, 1-3=path steps, 4=AllSet
 function renderStep(
@@ -586,13 +645,13 @@ function renderStep(
   }
 
   if (intent === "website") {
-    if (stepIndex === 1) return <ClaudeCodeStep onStepComplete={onStepComplete} />;
+    if (stepIndex === 1) return <ConfigureCodingAgentsStep onStepComplete={onStepComplete} />;
     if (stepIndex === 2) return <PlanningStep onStepComplete={onStepComplete} />;
     if (stepIndex === 3) return <DeployStep onStepComplete={onStepComplete} />;
   }
 
   if (intent === "automate") {
-    if (stepIndex === 1) return <ClaudeCodeStep onStepComplete={onStepComplete} />;
+    if (stepIndex === 1) return <ConfigureCodingAgentsStep onStepComplete={onStepComplete} />;
     if (stepIndex === 2) return <AgentsStep onStepComplete={onStepComplete} />;
     if (stepIndex === 3) return <AgentTasksStep onStepComplete={onStepComplete} />;
   }

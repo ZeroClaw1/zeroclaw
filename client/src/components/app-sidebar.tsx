@@ -46,7 +46,7 @@ const navItems = [
   { label: "Planning", icon: ClipboardList, href: "/planning" },
   { label: "OpenClaw", icon: Terminal, href: "/openclaw" },
   { label: "Orchestrator", icon: Brain, href: "/context" },
-  { label: "Claude Code", icon: Code2, href: "/claude-code" },
+  { label: "Coding Agents", icon: Code2, href: "/coding-agents" },
   { label: "Logs", icon: Terminal, href: "/logs" },
   { label: "GitHub", icon: Github, href: "/github" },
   { label: "Secrets", icon: KeyRound, href: "/secrets" },
@@ -81,18 +81,28 @@ function VaultStatusDot() {
   );
 }
 
-function ClaudeCodeStatusDot() {
-  const { data } = useQuery<{ status: string } | null>({
+function CodingAgentsStatusDot() {
+  const { data: claudeData } = useQuery<{ status: string } | null>({
     queryKey: ["/api/claude-code/config"],
     refetchInterval: 10000,
   });
+  const { data: openCodeData } = useQuery<{ status: string } | null>({
+    queryKey: ["/api/opencode/config"],
+    refetchInterval: 10000,
+  });
 
-  if (!data || data.status !== "connected") return null;
+  const claudeConnected = claudeData?.status === "connected";
+  const openCodeConnected = openCodeData?.status === "connected";
+
+  if (!claudeConnected && !openCodeConnected) return null;
+
+  // Emerald if Claude connected, lime if OpenCode connected, both = emerald
+  const color = claudeConnected ? "bg-emerald-400" : "bg-lime-400";
 
   return (
     <div
-      className="h-1.5 w-1.5 rounded-full bg-emerald-400 ml-auto"
-      data-testid="claude-code-status-dot"
+      className={`h-1.5 w-1.5 rounded-full ${color} ml-auto`}
+      data-testid="coding-agents-status-dot"
     />
   );
 }
@@ -171,7 +181,7 @@ export function AppSidebar() {
                         <Zap className="h-3 w-3 ml-auto text-primary pulse-live" />
                       )}
                       {item.label === "Orchestrator" && <VaultStatusDot />}
-                      {item.label === "Claude Code" && <ClaudeCodeStatusDot />}
+                      {item.label === "Coding Agents" && <CodingAgentsStatusDot />}
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

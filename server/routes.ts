@@ -33,6 +33,7 @@ import {
   loginSchema,
   updateVaultConfigSchema,
   updateClaudeCodeConfigSchema,
+  updateOpenCodeConfigSchema,
   submitCodingTaskSchema,
   PRICING_TIERS,
   insertTeamSchema,
@@ -1745,6 +1746,23 @@ export async function registerRoutes(
   // Claude Code Integration
   // ========================================
   // Helper: mask secrets for display
+  function getDefaultBaseUrl(provider: string): string {
+    switch (provider) {
+      case "openai": return "https://api.openai.com/v1";
+      case "google": return "https://generativelanguage.googleapis.com/v1beta/openai";
+      case "openrouter": return "https://openrouter.ai/api/v1";
+      case "ollama": return "http://localhost:11434/v1";
+      default: return "https://api.openai.com/v1";
+    }
+  }
+
+  function maskOpenCodeConfig(config: any) {
+    return {
+      ...config,
+      apiKey: config.apiKey ? "•••" + config.apiKey.slice(-4) : "",
+    };
+  }
+
   function maskClaudeConfig(config: any) {
     return {
       ...config,
@@ -1814,6 +1832,31 @@ export async function registerRoutes(
     }
   });
 
+  // Helper: build Obsidian vault context for a task
+  function buildVaultContext(userId: string, prompt: string, taskId: string): string {
+    const notes = storage.getVaultNotes(userId);
+    if (notes.length === 0) return "";
+    const promptLower = prompt.toLowerCase();
+    const scored = notes.map(n => {
+      let score = 0;
+      const words = promptLower.split(/\s+/);
+      words.forEach(w => {
+        if (w.length > 3 && n.title.toLowerCase().includes(w)) score += 3;
+        if (n.tags.some(t => t.toLowerCase().includes(w))) score += 2;
+      });
+      if (n.isStructureNote) score += 1;
+      return { note: n, score };
+    }).filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
+
+    if (scored.length > 0) {
+      const noteIds = scored.map(s => s.note.id);
+      storage.updateCodingTask(userId, taskId, { contextNotes: noteIds });
+      return "\n\nRelevant context from user's knowledge base:\n" +
+        scored.map(s => `## ${s.note.title}\nPath: ${s.note.path}\nTags: ${s.note.tags.join(", ")}\nLinks: ${s.note.links.join(", ")}`).join("\n\n");
+    }
+    return "";
+  }
+
   app.post("/api/claude-code/tasks", async (req, res) => {
     const userId = req.session.userId!;
     // Check monthly task limit via metering
@@ -1824,6 +1867,94 @@ export async function registerRoutes(
     const parsed = submitCodingTaskSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
+    const engine = parsed.data.engine || "claude_code";
+
+    // ---- OpenCode engine ----
+    if (engine === "opencode") {
+      const ocConfig = storage.getOpenCodeConfigRaw(userId);
+      if (!ocConfig || !ocConfig.apiKey) {
+        return res.status(400).json({ error: "OpenCode not configured — add an API key first" });
+      }
+      const task = storage.submitCodingTask(userId, parsed.data);
+      res.status(201).json(task);
+
+      let contextContent = "";
+      if (ocConfig.useObsidianContext) {
+        contextContent = buildVaultContext(userId, parsed.data.prompt, task.id);
+      }
+
+      storage.updateCodingTask(userId, task.id, { status: "running" });
+
+      try {
+        const systemPrompt = [
+          "You are an AI programming assistant integrated into ZeroClaw via OpenCode.",
+          "You handle coding tasks delegated by the orchestrator.",
+          "Provide clear, production-ready code with explanations.",
+          ocConfig.systemPrompt ? `\nCustom instructions: ${ocConfig.systemPrompt}` : "",
+          contextContent,
+        ].filter(Boolean).join("\n");
+
+        let responseText = "";
+        let tokensUsed = 0;
+
+        if (ocConfig.provider === "anthropic") {
+          // Use Anthropic SDK directly
+          const client = new Anthropic({ apiKey: ocConfig.apiKey });
+          const response = await client.messages.create({
+            model: ocConfig.model,
+            max_tokens: ocConfig.maxTokens,
+            system: systemPrompt,
+            messages: [{ role: "user", content: parsed.data.prompt }],
+          });
+          responseText = response.content
+            .filter((b): b is Anthropic.TextBlock => b.type === "text")
+            .map(b => b.text).join("\n");
+          tokensUsed = (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
+        } else {
+          // OpenAI-compatible API (openai, google, openrouter, ollama, custom)
+          const baseUrl = ocConfig.baseUrl || getDefaultBaseUrl(ocConfig.provider);
+          const apiResponse = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${ocConfig.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: ocConfig.model,
+              max_tokens: ocConfig.maxTokens,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: parsed.data.prompt },
+              ],
+            }),
+          });
+          if (!apiResponse.ok) {
+            const errBody = await apiResponse.text();
+            throw new Error(`API error ${apiResponse.status}: ${errBody.slice(0, 300)}`);
+          }
+          const apiData = await apiResponse.json() as any;
+          responseText = apiData.choices?.[0]?.message?.content ?? "";
+          tokensUsed = (apiData.usage?.prompt_tokens ?? 0) + (apiData.usage?.completion_tokens ?? 0);
+        }
+
+        storage.updateCodingTask(userId, task.id, {
+          status: "completed",
+          response: responseText,
+          tokensUsed,
+          completedAt: new Date().toISOString(),
+        });
+        storage.incrementOpenCodeTokens(userId, tokensUsed);
+      } catch (err: any) {
+        storage.updateCodingTask(userId, task.id, {
+          status: "failed",
+          error: err?.message || "Unknown error calling OpenCode provider API",
+          completedAt: new Date().toISOString(),
+        });
+      }
+      return;
+    }
+
+    // ---- Claude Code engine (default) ----
     const config = storage.getClaudeCodeConfigRaw(userId);
     if (!config) {
       return res.status(400).json({ error: "Claude Code not configured" });
@@ -1842,28 +1973,7 @@ export async function registerRoutes(
     // Build context from Obsidian vault if enabled
     let contextContent = "";
     if (config.useObsidianContext) {
-      const notes = storage.getVaultNotes(userId);
-      if (notes.length > 0) {
-        // Pick the most relevant notes (up to 5) based on title/tag overlap with the prompt
-        const promptLower = parsed.data.prompt.toLowerCase();
-        const scored = notes.map(n => {
-          let score = 0;
-          const words = promptLower.split(/\s+/);
-          words.forEach(w => {
-            if (w.length > 3 && n.title.toLowerCase().includes(w)) score += 3;
-            if (n.tags.some(t => t.toLowerCase().includes(w))) score += 2;
-          });
-          if (n.isStructureNote) score += 1;
-          return { note: n, score };
-        }).filter(s => s.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
-
-        if (scored.length > 0) {
-          const noteIds = scored.map(s => s.note.id);
-          storage.updateCodingTask(userId, task.id, { contextNotes: noteIds });
-          contextContent = "\n\nRelevant context from user's knowledge base:\n" +
-            scored.map(s => `## ${s.note.title}\nPath: ${s.note.path}\nTags: ${s.note.tags.join(", ")}\nLinks: ${s.note.links.join(", ")}`).join("\n\n");
-        }
-      }
+      contextContent = buildVaultContext(userId, parsed.data.prompt, task.id);
     }
 
     // Execute the task asynchronously via Anthropic API
@@ -2047,6 +2157,65 @@ export async function registerRoutes(
     }
 
     res.json({ files, count: files.length });
+  });
+
+  // ========================================
+  // OpenCode Config
+  // ========================================
+  app.get("/api/opencode/config", (req, res) => {
+    const userId = req.session.userId!;
+    const config = storage.getOpenCodeConfig(userId);
+    if (!config) return res.json(null);
+    res.json(maskOpenCodeConfig(config));
+  });
+
+  app.patch("/api/opencode/config", (req, res) => {
+    const userId = req.session.userId!;
+    const parsed = updateOpenCodeConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const config = storage.updateOpenCodeConfig(userId, parsed.data);
+    res.json(maskOpenCodeConfig(config));
+  });
+
+  app.post("/api/opencode/test", async (req, res) => {
+    const userId = req.session.userId!;
+    const config = storage.getOpenCodeConfigRaw(userId);
+    if (!config || !config.apiKey) {
+      return res.json({ success: false, message: "No API key configured" });
+    }
+    try {
+      if (config.provider === "anthropic") {
+        const client = new Anthropic({ apiKey: config.apiKey });
+        await client.messages.create({
+          model: config.model || "claude-sonnet-4-20250514",
+          max_tokens: 1,
+          messages: [{ role: "user", content: "ping" }],
+        });
+      } else {
+        const baseUrl = config.baseUrl || getDefaultBaseUrl(config.provider);
+        const apiResponse = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: config.model || "gpt-4o",
+            max_tokens: 1,
+            messages: [{ role: "user", content: "ping" }],
+          }),
+        });
+        if (!apiResponse.ok) {
+          const errBody = await apiResponse.text();
+          throw new Error(`API error ${apiResponse.status}: ${errBody.slice(0, 200)}`);
+        }
+      }
+      storage.updateOpenCodeConfig(userId, {});
+      res.json({ success: true, message: `${config.provider} API key is valid. Connected.` });
+    } catch (err: any) {
+      const msg = err?.status === 401 ? "Invalid API key" : (err?.message || "Connection failed");
+      res.json({ success: false, message: msg });
+    }
   });
 
   // ========================================
